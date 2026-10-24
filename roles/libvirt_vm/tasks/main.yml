@@ -1,0 +1,66 @@
+# Creates one cloud-init Ubuntu VM described by `vm`:
+#   {name, memory_mb, vcpus, disk_gb, nics: [{network, mac, ip, prefix, gateway, dns}]}
+
+- name: "{{ vm.name }} | Create build directory"
+  ansible.builtin.file:
+    path: "{{ cache_dir }}/build/{{ vm.name }}"
+    state: directory
+    mode: "0700"
+
+- name: "{{ vm.name }} | Render cloud-init seed"
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ cache_dir }}/build/{{ vm.name }}/{{ item }}"
+    mode: "0600"
+  loop: [user-data, meta-data, network-config]
+  register: seed_files
+
+- name: "{{ vm.name }} | Check seed ISO"
+  ansible.builtin.stat:
+    path: "{{ cache_dir }}/build/{{ vm.name }}/seed.iso"
+  register: seed_iso_stat
+
+- name: "{{ vm.name }} | Build seed ISO"
+  ansible.builtin.command:
+    chdir: "{{ cache_dir }}/build/{{ vm.name }}"
+    cmd: xorriso -as mkisofs -quiet -volid cidata -joliet -rock -output seed.iso user-data meta-data network-config
+  when: seed_files is changed or not seed_iso_stat.stat.exists
+  register: seed_iso
+
+- name: "{{ vm.name }} | Check volumes"
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} vol-info --pool {{ libvirt_pool }} {{ item }}
+  loop: ["{{ vm.name }}.qcow2", "{{ vm.name }}-seed.iso"]
+  register: vols
+  changed_when: false
+  failed_when: false
+
+- name: "{{ vm.name }} | Create disk as overlay of the base image"
+  ansible.builtin.command: >-
+    virsh -c {{ libvirt_uri }} vol-create-as {{ libvirt_pool }} {{ vm.name }}.qcow2 {{ vm.disk_gb }}G
+    --format qcow2 --backing-vol {{ ubuntu_image.volume }} --backing-vol-format qcow2
+  when: vols.results[0].rc != 0
+
+# cloud-init only reads the seed on first boot: an updated seed matters for
+# rebuilt VMs (`make destroy`), not for running ones.
+- name: "{{ vm.name }} | Upload seed ISO"
+  when: vols.results[1].rc != 0 or seed_iso is changed
+  ansible.builtin.shell: |
+    set -e
+    virsh -c {{ libvirt_uri }} vol-delete --pool {{ libvirt_pool }} {{ vm.name }}-seed.iso 2>/dev/null || true
+    virsh -c {{ libvirt_uri }} vol-create-as {{ libvirt_pool }} {{ vm.name }}-seed.iso $(stat -c %s seed.iso)b --format raw
+    virsh -c {{ libvirt_uri }} vol-upload --pool {{ libvirt_pool }} {{ vm.name }}-seed.iso seed.iso
+  args:
+    chdir: "{{ cache_dir }}/build/{{ vm.name }}"
+
+- name: "{{ vm.name }} | Define domain"
+  community.libvirt.virt:
+    uri: "{{ libvirt_uri }}"
+    command: define
+    xml: "{{ lookup('template', 'domain.xml.j2') }}"
+
+- name: "{{ vm.name }} | Start domain and enable autostart"
+  community.libvirt.virt:
+    uri: "{{ libvirt_uri }}"
+    name: "{{ vm.name }}"
+    state: running
+    autostart: true

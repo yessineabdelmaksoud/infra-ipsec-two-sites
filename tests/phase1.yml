@@ -1,0 +1,55 @@
+# Phase 1 validation: networks and VMs exist, fixed addressing is exactly as
+# planned, and every LAN VM can ping every other one (spec stage 1 test).
+
+- name: Phase 1 test | Hypervisor objects
+  hosts: hypervisor
+  gather_facts: false
+  tasks:
+    - name: Networks are active and autostarted
+      ansible.builtin.command: virsh -c {{ libvirt_uri }} net-info {{ item }}
+      loop: ["{{ wan_network_name }}", "{{ lan_network_name }}"]
+      register: net_info
+      changed_when: false
+      failed_when: >-
+        net_info.rc != 0
+        or net_info.stdout is not search('Active:\s+yes')
+        or net_info.stdout is not search('Autostart:\s+yes')
+
+    - name: VMs are running
+      ansible.builtin.command: virsh -c {{ libvirt_uri }} domstate {{ item }}
+      loop: "{{ groups['linux_vms'] }}"
+      register: domstate
+      changed_when: false
+      failed_when: domstate.stdout | trim != 'running'
+
+- name: Phase 1 test | Guest addressing and LAN connectivity
+  hosts: linux_vms
+  gather_facts: false
+  tasks:
+    - name: Read addresses and default route
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - ip -j -4 addr show dev lan0
+        - ip -j -4 route show default
+      register: ipinfo
+      changed_when: false
+
+    - name: Address is exactly the planned /24, gateway is OPNsense LAN, VIP absent
+      vars:
+        addrs: "{{ (ipinfo.results[0].stdout | from_json)[0].addr_info }}"
+        routes: "{{ ipinfo.results[1].stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - addrs | length == 1
+          - addrs[0].local == ansible_host
+          - addrs[0].prefixlen == lan_prefix | int
+          - routes | length == 1
+          - routes[0].gateway == site.lan_gateway
+          - site.vip not in addrs | map(attribute='local')
+        fail_msg: "lan0={{ addrs }} default={{ routes }}"
+        success_msg: "{{ ansible_host }}/{{ lan_prefix }} via {{ site.lan_gateway }}"
+
+    - name: Ping every other LAN VM
+      ansible.builtin.command: ping -c 2 -W 2 {{ hostvars[item].ansible_host }}
+      loop: "{{ groups['linux_vms'] | difference([inventory_hostname]) }}"
+      changed_when: false

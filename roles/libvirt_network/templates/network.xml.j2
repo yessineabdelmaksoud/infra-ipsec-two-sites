@@ -1,0 +1,10 @@
+<network>
+  <name>{{ net.name }}</name>
+  <bridge name='{{ net.bridge }}' stp='off' delay='0'/>
+{% if net.forward is defined %}
+  <forward mode='{{ net.forward }}'/>
+{% endif %}
+  <!-- No DHCP and no libvirt DNS: every address is static, OPNsense serves DNS. -->
+  <dns enable='no'/>
+  <ip address='{{ net.host_ip }}' prefix='{{ net.prefix }}'/>
+</network>

@@ -1,0 +1,80 @@
+# Prepares the hypervisor: tool checks, storage pool, verified base image.
+# Everything goes through the libvirt API, so no root is needed after bootstrap.
+
+- name: Check hypervisor tools (run scripts/bootstrap-host.sh once if this fails)
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - virsh -c {{ libvirt_uri }} uri
+    - xorriso -version
+  changed_when: false
+
+- name: Check the lab SSH key exists (created by `make setup`)
+  ansible.builtin.stat:
+    path: "{{ secrets_dir }}/infra_ed25519.pub"
+  register: ssh_pubkey
+  failed_when: not ssh_pubkey.stat.exists
+
+- name: Define storage pool
+  community.libvirt.virt_pool:
+    uri: "{{ libvirt_uri }}"
+    command: define
+    name: "{{ libvirt_pool }}"
+    xml: "{{ lookup('template', 'pool.xml.j2') }}"
+
+- name: Read storage pool state
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} pool-info {{ libvirt_pool }}
+  register: pool_info
+  changed_when: false
+
+- name: Build and start storage pool
+  ansible.builtin.command: "virsh -c {{ libvirt_uri }} {{ item }} {{ libvirt_pool }}"
+  loop: [pool-build, pool-start]
+  when: pool_info.stdout is not search('State:\s+running')
+
+- name: Autostart storage pool
+  community.libvirt.virt_pool:
+    uri: "{{ libvirt_uri }}"
+    name: "{{ libvirt_pool }}"
+    autostart: true
+
+- name: Download Ubuntu cloud image (pinned serial, SHA-256 verified)
+  ansible.builtin.get_url:
+    url: "{{ ubuntu_image.url }}"
+    dest: "{{ cache_dir }}/images/{{ ubuntu_image.url | basename }}"
+    checksum: "sha256:{{ ubuntu_image.sha256 }}"
+    mode: "0644"
+  register: image_download
+  retries: 3
+  delay: 5
+  until: image_download is succeeded
+
+- name: Check base volume
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} vol-info --pool {{ libvirt_pool }} {{ ubuntu_image.volume }}
+  register: base_vol
+  changed_when: false
+  failed_when: false
+
+- name: Upload base image into the pool
+  when: base_vol.rc != 0
+  vars:
+    image_path: "{{ cache_dir }}/images/{{ ubuntu_image.url | basename }}"
+  block:
+    - name: Measure base image
+      ansible.builtin.stat:
+        path: "{{ image_path }}"
+      register: image_stat
+
+    # The volume is created raw and filled with the qcow2 bytes; the pool
+    # refresh then probes the real format from the file header.
+    - name: Upload base image
+      ansible.builtin.shell: |
+        set -e
+        virsh -c {{ libvirt_uri }} vol-create-as {{ libvirt_pool }} {{ ubuntu_image.volume }} {{ image_stat.stat.size }}b --format raw
+        virsh -c {{ libvirt_uri }} vol-upload --pool {{ libvirt_pool }} {{ ubuntu_image.volume }} {{ image_path }}
+        virsh -c {{ libvirt_uri }} pool-refresh {{ libvirt_pool }}
+
+- name: Verify base volume is qcow2
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} vol-dumpxml --pool {{ libvirt_pool }} {{ ubuntu_image.volume }}
+  register: base_vol_xml
+  changed_when: false
+  failed_when: base_vol_xml.stdout is not search("<format type='qcow2'/>")

@@ -1,0 +1,56 @@
+# Defines, starts and autostarts each network in `libvirt_networks`:
+#   - {name, bridge, host_ip, prefix, forward: nat|omit(isolated)}
+
+# Guard: a network shared by both sites in lab mode must not be redefined with
+# another host address (e.g. Site B run on Site A's host without MODE=lab).
+- name: Read existing network addresses
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} net-dumpxml {{ net.name }}
+  loop: "{{ libvirt_networks }}"
+  loop_control:
+    loop_var: net
+    label: "{{ net.name }}"
+  register: existing_nets
+  changed_when: false
+  failed_when: false
+
+- name: Refuse to change the host address of an existing network
+  ansible.builtin.assert:
+    that: item.rc != 0 or item.stdout is search("address='" ~ item.net.host_ip ~ "'")
+    fail_msg: >-
+      Network {{ item.net.name }} already exists with another host address than
+      {{ item.net.host_ip }}. Both sites on one computer? Use MODE=lab.
+    quiet: true
+  loop: "{{ existing_nets.results }}"
+  loop_control:
+    label: "{{ item.net.name }}"
+
+- name: Define networks
+  community.libvirt.virt_net:
+    uri: "{{ libvirt_uri }}"
+    command: define
+    name: "{{ net.name }}"
+    xml: "{{ lookup('template', 'network.xml.j2') }}"
+  loop: "{{ libvirt_networks }}"
+  loop_control:
+    loop_var: net
+    label: "{{ net.name }}"
+
+- name: Start networks
+  community.libvirt.virt_net:
+    uri: "{{ libvirt_uri }}"
+    name: "{{ net.name }}"
+    state: active
+  loop: "{{ libvirt_networks }}"
+  loop_control:
+    loop_var: net
+    label: "{{ net.name }}"
+
+- name: Autostart networks
+  community.libvirt.virt_net:
+    uri: "{{ libvirt_uri }}"
+    name: "{{ net.name }}"
+    autostart: true
+  loop: "{{ libvirt_networks }}"
+  loop_control:
+    loop_var: net
+    label: "{{ net.name }}"

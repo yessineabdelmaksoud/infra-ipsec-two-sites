@@ -1,0 +1,65 @@
+# Phase 1 — virtual networks and the site's four application VMs.
+# Test: make test-phase1 SITE=<a|b>
+
+- name: Phase 1 | Hypervisor, networks and VMs
+  hosts: hypervisor
+  gather_facts: false
+  tasks:
+    - name: Prepare hypervisor
+      ansible.builtin.import_role:
+        name: hypervisor
+
+    - name: WAN and LAN networks
+      ansible.builtin.include_role:
+        name: libvirt_network
+      vars:
+        libvirt_networks:
+          - name: "{{ wan_network_name }}"
+            bridge: "{{ wan_bridge }}"
+            host_ip: "{{ site.wan_host_ip }}"
+            prefix: "{{ wan_prefix }}"
+            forward: nat
+          # Isolated: the host has a management address but does not route.
+          - name: "{{ lan_network_name }}"
+            bridge: "{{ lan_bridge }}"
+            host_ip: "{{ site.lan_host_ip }}"
+            prefix: "{{ lan_prefix }}"
+
+    - name: Application VMs
+      ansible.builtin.include_role:
+        name: libvirt_vm
+      loop: "{{ groups['linux_vms'] }}"
+      loop_control:
+        loop_var: vm_host
+      vars:
+        vm:
+          name: "{{ vm_host }}"
+          memory_mb: "{{ hostvars[vm_host].vm_memory_mb }}"
+          vcpus: "{{ hostvars[vm_host].vm_vcpus }}"
+          disk_gb: "{{ hostvars[vm_host].vm_disk_gb }}"
+          nics:
+            - network: "{{ lan_network_name }}"
+              mac: "{{ hostvars[vm_host].vm_mac }}"
+              ip: "{{ hostvars[vm_host].ansible_host }}"
+              prefix: "{{ lan_prefix }}"
+              gateway: "{{ site.lan_gateway }}"
+              dns: "{{ site.lan_gateway }}"
+
+    - name: Wait for SSH on the VMs
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: 22
+        timeout: 300
+      loop: "{{ groups['linux_vms'] }}"
+
+- name: Phase 1 | Guest first boot
+  hosts: linux_vms
+  gather_facts: false
+  tasks:
+    - name: Wait for connection
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false

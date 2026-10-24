@@ -1,0 +1,6 @@
+# Toolchain, downloads and generated artefacts
+.venv/
+.cache/
+# Secrets: SSH keys, generated passwords, IPsec PSK (exchange out of band)
+.secrets/
+*.retry

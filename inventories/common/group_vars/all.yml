@@ -1,0 +1,61 @@
+# Shared by Site A and Site B. Both students must keep this file identical:
+# it is the agreed addressing plan (spec §3) and lab layout.
+
+deployment_mode: distributed   # lab | distributed (set by `make ... MODE=`)
+
+sites:
+  a:
+    name: Site A
+    lan_cidr: 10.0.2.0/24
+    lan_gateway: 10.0.2.1        # OPNsense LAN
+    lan_host_ip: 10.0.2.254      # hypervisor management address
+    vip: 10.0.2.100
+    vrrp_router_id: 51
+    wan_ip: 192.168.100.11       # OPNsense WAN
+    wan_host_ip: 192.168.100.1   # upstream gateway = this site's hypervisor
+    web_ip: 10.0.2.7
+  b:
+    name: Site B
+    lan_cidr: 10.15.15.0/24
+    lan_gateway: 10.15.15.1
+    lan_host_ip: 10.15.15.254
+    vip: 10.15.15.100
+    vrrp_router_id: 52
+    wan_ip: 192.168.100.12
+    # In lab mode both sites share Site A's hypervisor bridge.
+    wan_host_ip: "{{ '192.168.100.1' if deployment_mode == 'lab' else '192.168.100.2' }}"
+    web_ip: 10.15.15.7
+
+# Derived from the site inventory's `site_id` / `peer_site_id`.
+site: "{{ sites[site_id] }}"
+peer: "{{ sites[peer_site_id] }}"
+lan_prefix: "{{ site.lan_cidr.split('/')[1] | int }}"
+lan_network_name: "infra-{{ site_id }}-lan"
+lan_bridge: "virbr-i{{ site_id }}"
+
+# Simulated Internet segment carrying both OPNsense WANs.
+wan_cidr: 192.168.100.0/24
+wan_prefix: 24
+wan_network_name: infra-wan
+wan_bridge: virbr-iwan
+
+# Hypervisor layout
+libvirt_uri: qemu:///system
+libvirt_pool: infra
+libvirt_pool_path: /var/lib/libvirt/images/infra
+repo_root: "{{ playbook_dir | dirname }}"
+cache_dir: "{{ repo_root }}/.cache"
+secrets_dir: "{{ repo_root }}/.secrets"
+
+ubuntu_image:
+  url: https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img
+  sha256: 04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
+  volume: ubuntu-24.04-20261017-base.qcow2
+
+# Guest defaults (overridden per group)
+vm_user: infra
+vm_vcpus: 1
+vm_memory_mb: 512
+vm_disk_gb: 10
+# Stable MAC derived from the LAN address: 10.0.2.7 -> 52:54:00:00:02:07
+vm_mac: "{% set o = ansible_host.split('.') %}52:54:00:{{ '%02x:%02x:%02x' | format(o[1] | int, o[2] | int, o[3] | int) }}"

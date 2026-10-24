@@ -1,0 +1,16 @@
+version: 2
+ethernets:
+{% for nic in vm.nics %}
+  lan{{ loop.index0 }}:
+    match:
+      macaddress: "{{ nic.mac }}"
+    set-name: lan{{ loop.index0 }}
+    addresses: ["{{ nic.ip }}/{{ nic.prefix }}"]
+{% if nic.gateway is defined %}
+    routes:
+      - to: default
+        via: {{ nic.gateway }}
+    nameservers:
+      addresses: [{{ nic.dns }}]
+{% endif %}
+{% endfor %}

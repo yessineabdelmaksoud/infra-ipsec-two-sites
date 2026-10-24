@@ -1,0 +1,29 @@
+# Removes SITE's VMs, their disks and its LAN network. The base image, the pool
+# and the WAN network (shared in lab mode) are kept unless -e destroy_wan=true.
+
+- name: Destroy site
+  hosts: hypervisor
+  gather_facts: false
+  tasks:
+    - name: Remove domains and their volumes
+      ansible.builtin.shell: |
+        virsh -c {{ libvirt_uri }} destroy {{ item }} >/dev/null 2>&1 || true
+        virsh -c {{ libvirt_uri }} undefine {{ item }} >/dev/null 2>&1 || true
+        for vol in {{ item }}.qcow2 {{ item }}-seed.iso; do
+          virsh -c {{ libvirt_uri }} vol-delete --pool {{ libvirt_pool }} $vol >/dev/null 2>&1 || true
+        done
+      loop: "{{ groups['linux_vms'] + groups['opnsense'] | default([]) }}"
+      changed_when: true
+
+    - name: Remove build directories
+      ansible.builtin.file:
+        path: "{{ cache_dir }}/build/{{ item }}"
+        state: absent
+      loop: "{{ groups['linux_vms'] + groups['opnsense'] | default([]) }}"
+
+    - name: Remove networks
+      ansible.builtin.shell: |
+        virsh -c {{ libvirt_uri }} net-destroy {{ item }} >/dev/null 2>&1 || true
+        virsh -c {{ libvirt_uri }} net-undefine {{ item }} >/dev/null 2>&1 || true
+      loop: "{{ [lan_network_name] + ([wan_network_name] if destroy_wan | default(false) | bool else []) }}"
+      changed_when: true

@@ -1,0 +1,39 @@
+<domain type='kvm'>
+  <name>{{ vm.name }}</name>
+  <memory unit='MiB'>{{ vm.memory_mb }}</memory>
+  <vcpu>{{ vm.vcpus }}</vcpu>
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <features><acpi/><apic/></features>
+  <cpu mode='host-passthrough'/>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <disk type='volume' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source pool='{{ libvirt_pool }}' volume='{{ vm.name }}.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <disk type='volume' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source pool='{{ libvirt_pool }}' volume='{{ vm.name }}-seed.iso'/>
+      <target dev='sda' bus='sata'/>
+      <readonly/>
+    </disk>
+{% for nic in vm.nics %}
+    <interface type='network'>
+      <source network='{{ nic.network }}'/>
+      <mac address='{{ nic.mac }}'/>
+      <model type='virtio'/>
+    </interface>
+{% endfor %}
+    <serial type='pty'><target port='0'/></serial>
+    <console type='pty'><target type='serial' port='0'/></console>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+    <memballoon model='virtio'/>
+  </devices>
+</domain>
