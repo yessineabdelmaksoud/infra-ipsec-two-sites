@@ -123,17 +123,25 @@ A phase is **done** only when its test passes on Site A (and Site B in lab mode)
 ### Phase 1 — Virtual networks and VMs
 
 Tasks
-- [ ] `scripts/bootstrap-host.sh` (sudo, once per computer): libvirt, virtinst, python3-libvirt/lxml, groups, libvirt network hook for Docker coexistence
-- [ ] `make setup`: venv with pinned ansible-core, pinned collections, SSH key in `.secrets/`
-- [ ] Role `hypervisor`: storage pool `infra`, download + SHA256-verify Ubuntu 24.04 image, upload as base volume
-- [ ] Role `libvirt_network`: `infra-wan` (NAT, host `.1`/`.2`) and `infra-<site>-lan` (isolated, host `.254`), no DHCP
-- [ ] Role `libvirt_vm`: qcow2 overlay, cloud-init seed (static IP /24, gateway `.1`, DNS `.1`, user `infra`, SSH key), domain XML, start
-- [ ] Deploy the four application VMs of the site
+- [x] `scripts/bootstrap-host.sh` (sudo, once per computer): libvirt, virtinst, python3-libvirt/lxml, groups, libvirt network hook for Docker coexistence
+- [x] `make setup`: venv with pinned `ansible` (bundled collections), SSH key in `.secrets/`
+- [x] Role `hypervisor`: storage pool `infra`, download + SHA256-verify Ubuntu 24.04 image, upload as base volume
+- [x] Role `libvirt_network`: `infra-wan` (NAT, host `.1`/`.2`) and `infra-<site>-lan` (isolated, host `.254`), no DHCP
+- [x] Role `libvirt_vm`: qcow2 overlay, cloud-init seed (static IP /24, gateway `.1`, DNS `.1`, user `infra`, SSH key), domain XML, start
+- [x] Deploy the four application VMs of the site
 
 Validation (`tests/phase1.yml`)
 - networks `infra-wan`, `infra-<site>-lan` active + autostart; 4 domains running
 - each VM: `lan0` has exactly its planned address /24; default route via OPNsense `.1`; VIP absent
 - **full ping mesh between the four LAN VMs succeeds** (spec test)
+
+Result (2026-10-25): **passed** for Site A and Site B (`MODE=lab`); re-running `make phase1` reports
+`changed=0`. Extra checks: A→B LAN ping fails (no host path between sites), VMs have no Internet
+yet (expected before OPNsense), the WAN guard refuses `SITE=b` without `MODE=lab` on a lab host.
+
+Lessons (Ubuntu 26.04 AppArmor):
+- libvirt hooks may only execute from `/etc/libvirt/hooks/**` or `/usr/sbin/*` → helper moved to `/etc/libvirt/hooks/lib/`.
+- `virt-aa-helper` cannot resolve `<disk type='volume'>` → domains reference pool files by path (`type='file'`).
 
 ### Phase 2 — OPNsense
 
@@ -223,6 +231,7 @@ Validation (`tests/phase6.yml` + `tests/acceptance.yml`)
 - **OPNsense automation** is the hardest part (no cloud-init). Mitigation: Phase 2 spike; fallback = documented manual console step + Ansible for everything after SSH is up.
 - **Cross-host WAN** on campus Wi-Fi (client isolation likely) → prefer Ethernet cable; lab mode keeps everything testable on one machine.
 - **Docker FORWARD DROP** can silently break libvirt NAT → handled by the bootstrap hook; checked in Phase 2 tests.
+- **RAM on a lab host**: both sites' 8 Linux VMs leave ~5.7 GiB available on this laptop (desktop apps included); two OPNsense VMs add ~3 GiB. Mitigation: OPNsense at 1 GiB if needed, or stop the other site's VMs when not testing Phase 6.
 - Failover covers HAProxy/Keepalived only — not web, MySQL or OPNsense (spec §10). Not claimed otherwise.
 
 ## 7. Progress log
@@ -230,4 +239,6 @@ Validation (`tests/phase6.yml` + `tests/acceptance.yml`)
 | Date | Phase | Status | Notes |
 |---|---|---|---|
 | 2026-10-24 | Plan | done | Environment inspected, architecture decided |
-| 2026-10-24 | 1 | in progress | Code written; playbooks syntax-checked and templates rendered for A, B and B-lab. Waiting for the one-time `sudo` bootstrap before the first deploy |
+| 2026-10-24 | 1 | in progress | Code written, syntax-checked, templates rendered for A, B, B-lab |
+| 2026-10-25 | 1 | **done** | `make test-phase1` passes for A and B (lab); two AppArmor issues fixed (see Phase 1) |
+| 2026-10-25 | 2 | next | Start with the OPNsense config-injection spike |

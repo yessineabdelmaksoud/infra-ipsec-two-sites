@@ -13,14 +13,16 @@
   <on_reboot>restart</on_reboot>
   <on_crash>destroy</on_crash>
   <devices>
-    <disk type='volume' device='disk'>
+{# Disks are referenced by path, not <disk type='volume'>: Ubuntu's virt-aa-helper
+   cannot resolve pool volumes and would leave them out of the VM's AppArmor profile. #}
+    <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' discard='unmap'/>
-      <source pool='{{ libvirt_pool }}' volume='{{ vm.name }}.qcow2'/>
+      <source file='{{ libvirt_pool_path }}/{{ vm.name }}.qcow2'/>
       <target dev='vda' bus='virtio'/>
     </disk>
-    <disk type='volume' device='cdrom'>
+    <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
-      <source pool='{{ libvirt_pool }}' volume='{{ vm.name }}-seed.iso'/>
+      <source file='{{ libvirt_pool_path }}/{{ vm.name }}-seed.iso'/>
       <target dev='sda' bus='sata'/>
       <readonly/>
     </disk>
