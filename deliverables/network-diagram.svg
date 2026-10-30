@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 760" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <title>Infrastructure IT — two sites joined by an IPsec IKEv2 tunnel</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#555"/>
+    </marker>
+  </defs>
+  <rect width="1120" height="760" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="560" y="34" text-anchor="middle" font-size="20" font-weight="bold" fill="#1c2430">Infrastructure IT — Site A ⇄ Site B over IPsec (IKEv2, ESP, tunnel mode)</text>
+
+  <!-- WAN / Internet -->
+  <rect x="60" y="60" width="1000" height="96" rx="10" fill="#f3f4f6" stroke="#9aa3ad" stroke-dasharray="6 4"/>
+  <text x="80" y="84" font-weight="bold" fill="#4a5565">WAN — simulated Internet 192.168.100.0/24</text>
+  <text x="80" y="104" fill="#4a5565">Internet clients (TCP 80/443) · host gateways .1 (A) / .2 (B)</text>
+  <text x="80" y="122" fill="#4a5565">two computers: Ethernet cable bridged into virbr-iwan</text>
+
+  <!-- ===================== SITE A ===================== -->
+  <rect x="40" y="180" width="500" height="560" rx="14" fill="#eef4ff" stroke="#1f5fbf" stroke-width="2"/>
+
+  <!-- OPNsense A -->
+  <rect x="190" y="222" width="200" height="74" rx="8" fill="#ffffff" stroke="#c2410c" stroke-width="2"/>
+  <text x="290" y="242" text-anchor="middle" font-weight="bold" fill="#c2410c">OPNsense A (a-opnsense)</text>
+  <text x="290" y="260" text-anchor="middle" font-size="12">WAN 192.168.100.11</text>
+  <text x="290" y="276" text-anchor="middle" font-size="12">LAN 10.0.2.1 (gateway, DNS)</text>
+  <text x="290" y="290" text-anchor="middle" font-size="10" fill="#555">DNAT 80/443 → VIP · default deny</text>
+
+  <!-- VIP A -->
+  <line x1="290" y1="296" x2="290" y2="334" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="215" y="336" width="150" height="34" rx="17" fill="#1f5fbf"/>
+  <text x="290" y="358" text-anchor="middle" font-weight="bold" fill="#ffffff">VIP 10.0.2.100</text>
+
+  <!-- HAProxy A -->
+  <rect x="70" y="400" width="190" height="78" rx="8" fill="#ffffff" stroke="#1f5fbf"/>
+  <text x="165" y="420" text-anchor="middle" font-weight="bold">a-haproxy1 10.0.2.5</text>
+  <text x="165" y="438" text-anchor="middle" font-size="12">HAProxy + Keepalived</text>
+  <text x="165" y="456" text-anchor="middle" font-size="12" font-weight="bold" fill="#15803d">MASTER · prio 150</text>
+  <text x="165" y="472" text-anchor="middle" font-size="10" fill="#555">owns the VIP</text>
+
+  <rect x="320" y="400" width="190" height="78" rx="8" fill="#ffffff" stroke="#1f5fbf"/>
+  <text x="415" y="420" text-anchor="middle" font-weight="bold">a-haproxy2 10.0.2.6</text>
+  <text x="415" y="438" text-anchor="middle" font-size="12">HAProxy + Keepalived</text>
+  <text x="415" y="456" text-anchor="middle" font-size="12" font-weight="bold" fill="#a16207">BACKUP · prio 100</text>
+  <text x="415" y="472" text-anchor="middle" font-size="10" fill="#555">takes the VIP on failure</text>
+
+  <line x1="250" y1="370" x2="180" y2="398" stroke="#1f5fbf" stroke-width="2"/>
+  <line x1="330" y1="370" x2="400" y2="398" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <line x1="260" y1="439" x2="320" y2="439" stroke="#888" stroke-dasharray="3 3"/>
+  <text x="290" y="494" text-anchor="middle" font-size="10" fill="#555">VRRP id 51 (unicast)</text>
+
+  <!-- Web A -->
+  <line x1="165" y1="478" x2="265" y2="526" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="415" y1="478" x2="315" y2="526" stroke="#555" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+  <rect x="190" y="528" width="200" height="62" rx="8" fill="#ffffff" stroke="#1f5fbf"/>
+  <text x="290" y="550" text-anchor="middle" font-weight="bold">a-web 10.0.2.7</text>
+  <text x="290" y="568" text-anchor="middle" font-size="12">Nginx + PHP-FPM</text>
+  <text x="290" y="583" text-anchor="middle" font-size="10" fill="#555">/health · /whoami</text>
+
+  <!-- DB A -->
+  <line x1="290" y1="590" x2="290" y2="630" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="300" y="614" font-size="10" fill="#555">TCP 3306 (app@10.0.2.7 only)</text>
+  <rect x="190" y="632" width="200" height="62" rx="8" fill="#ffffff" stroke="#1f5fbf"/>
+  <text x="290" y="654" text-anchor="middle" font-weight="bold">a-db 10.0.2.8</text>
+  <text x="290" y="672" text-anchor="middle" font-size="12">MySQL 8.0 · database "infra"</text>
+  <text x="290" y="687" text-anchor="middle" font-size="10" fill="#555">never reachable from the WAN</text>
+  <text x="60" y="726" font-size="11" fill="#4a5565">All VMs: /24, gateway 10.0.2.1 · hypervisor 10.0.2.254 (management only)</text>
+
+  <!-- ===================== SITE B ===================== -->
+  <rect x="580" y="180" width="500" height="560" rx="14" fill="#ecfdf3" stroke="#1d8a4e" stroke-width="2"/>
+
+  <rect x="730" y="222" width="200" height="74" rx="8" fill="#ffffff" stroke="#c2410c" stroke-width="2"/>
+  <text x="830" y="242" text-anchor="middle" font-weight="bold" fill="#c2410c">OPNsense B (b-opnsense)</text>
+  <text x="830" y="260" text-anchor="middle" font-size="12">WAN 192.168.100.12</text>
+  <text x="830" y="276" text-anchor="middle" font-size="12">LAN 10.15.15.1 (gateway, DNS)</text>
+  <text x="830" y="290" text-anchor="middle" font-size="10" fill="#555">DNAT 80/443 → VIP · default deny</text>
+
+  <line x1="830" y1="296" x2="830" y2="334" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="750" y="336" width="160" height="34" rx="17" fill="#1d8a4e"/>
+  <text x="830" y="358" text-anchor="middle" font-weight="bold" fill="#ffffff">VIP 10.15.15.100</text>
+
+  <rect x="610" y="400" width="190" height="78" rx="8" fill="#ffffff" stroke="#1d8a4e"/>
+  <text x="705" y="420" text-anchor="middle" font-weight="bold">b-haproxy1 10.15.15.10</text>
+  <text x="705" y="438" text-anchor="middle" font-size="12">HAProxy + Keepalived</text>
+  <text x="705" y="456" text-anchor="middle" font-size="12" font-weight="bold" fill="#15803d">MASTER · prio 150</text>
+  <text x="705" y="472" text-anchor="middle" font-size="10" fill="#555">owns the VIP</text>
+
+  <rect x="860" y="400" width="190" height="78" rx="8" fill="#ffffff" stroke="#1d8a4e"/>
+  <text x="955" y="420" text-anchor="middle" font-weight="bold">b-haproxy2 10.15.15.11</text>
+  <text x="955" y="438" text-anchor="middle" font-size="12">HAProxy + Keepalived</text>
+  <text x="955" y="456" text-anchor="middle" font-size="12" font-weight="bold" fill="#a16207">BACKUP · prio 100</text>
+  <text x="955" y="472" text-anchor="middle" font-size="10" fill="#555">takes the VIP on failure</text>
+
+  <line x1="790" y1="370" x2="720" y2="398" stroke="#1d8a4e" stroke-width="2"/>
+  <line x1="870" y1="370" x2="940" y2="398" stroke="#1d8a4e" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <line x1="800" y1="439" x2="860" y2="439" stroke="#888" stroke-dasharray="3 3"/>
+  <text x="830" y="494" text-anchor="middle" font-size="10" fill="#555">VRRP id 52 (unicast)</text>
+
+  <line x1="705" y1="478" x2="805" y2="526" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="955" y1="478" x2="855" y2="526" stroke="#555" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+  <rect x="730" y="528" width="200" height="62" rx="8" fill="#ffffff" stroke="#1d8a4e"/>
+  <text x="830" y="550" text-anchor="middle" font-weight="bold">b-web 10.15.15.7</text>
+  <text x="830" y="568" text-anchor="middle" font-size="12">Nginx + PHP-FPM</text>
+  <text x="830" y="583" text-anchor="middle" font-size="10" fill="#555">/health · /whoami</text>
+
+  <line x1="830" y1="590" x2="830" y2="630" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="840" y="614" font-size="10" fill="#555">TCP 3306 (app@10.15.15.7 only)</text>
+  <rect x="730" y="632" width="200" height="62" rx="8" fill="#ffffff" stroke="#1d8a4e"/>
+  <text x="830" y="654" text-anchor="middle" font-weight="bold">b-db 10.15.15.8</text>
+  <text x="830" y="672" text-anchor="middle" font-size="12">MySQL 8.0 · database "infra"</text>
+  <text x="830" y="687" text-anchor="middle" font-size="10" fill="#555">never reachable from the WAN</text>
+  <text x="600" y="726" font-size="11" fill="#4a5565">All VMs: /24, gateway 10.15.15.1 · hypervisor 10.15.15.254 (management only)</text>
+
+  <!-- inter-site flow note -->
+  <rect x="440" y="600" width="240" height="70" rx="8" fill="#fff7e6" stroke="#b45309"/>
+  <text x="560" y="622" text-anchor="middle" font-weight="bold" font-size="12" fill="#92400e">Inter-site, no NAT</text>
+  <text x="560" y="640" text-anchor="middle" font-size="11" fill="#92400e">10.0.2.7 → 10.15.15.7 via the tunnel</text>
+  <text x="560" y="656" text-anchor="middle" font-size="11" fill="#92400e">peer sees source 10.0.2.7</text>
+  <!-- WAN uplinks and the IPsec tunnel (drawn last, on top) -->
+  <line x1="290" y1="156" x2="290" y2="222" stroke="#9aa3ad" stroke-width="3"/>
+  <line x1="830" y1="156" x2="830" y2="222" stroke="#9aa3ad" stroke-width="3"/>
+  <line x1="390" y1="252" x2="730" y2="252" stroke="#b45309" stroke-width="10" stroke-linecap="round"/>
+  <line x1="390" y1="252" x2="730" y2="252" stroke="#fde68a" stroke-width="2" stroke-dasharray="8 6"/>
+  <rect x="436" y="262" width="248" height="58" rx="6" fill="#fff7e6" stroke="#b45309"/>
+  <text x="560" y="280" text-anchor="middle" font-weight="bold" fill="#92400e">IPsec IKEv2 · ESP tunnel mode</text>
+  <text x="560" y="297" text-anchor="middle" font-size="11" fill="#92400e">P1 AES-256 / SHA-256 / DH14</text>
+  <text x="560" y="312" text-anchor="middle" font-size="11" fill="#92400e">P2 AES-256-GCM + PFS · UDP 500/4500, ESP</text>
+  <!-- site titles on top of the uplinks, with a halo -->
+  <text stroke="#eef4ff" stroke-width="8" paint-order="stroke" x="60" y="208" font-size="17" font-weight="bold" fill="#1f5fbf">Site A — Student 1 — LAN 10.0.2.0/24</text>
+  <text stroke="#ecfdf3" stroke-width="8" paint-order="stroke" x="600" y="208" font-size="17" font-weight="bold" fill="#1d8a4e">Site B — Student 2 — LAN 10.15.15.0/24</text>
+</svg>

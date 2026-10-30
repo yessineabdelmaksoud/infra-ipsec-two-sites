@@ -1,0 +1,54 @@
+# One failover scenario: stop `stopped_service` on the MASTER, check the BACKUP
+# takes over and serves the page, then start it again and check the VIP returns.
+# `page_url` (default: the VIP) is where the page is requested — the OPNsense
+# WAN address in Phase 5 proves the public path survives a failover too.
+- name: "{{ stopped_service }} | failover and recovery"
+  block:
+    - name: "{{ stopped_service }} | systemctl stop {{ stopped_service }} on {{ master }}"
+      ansible.builtin.service:
+        name: "{{ stopped_service }}"
+        state: stopped
+      delegate_to: "{{ master }}"
+      become: true
+
+    - name: "{{ stopped_service }} | VIP moves to {{ backup }}"
+      ansible.builtin.include_tasks: vip-holder.yml
+      vars:
+        expected_holder: "{{ backup }}"
+
+    - name: "{{ stopped_service }} | the site still answers, now via {{ backup }}"
+      ansible.builtin.uri:
+        url: "{{ page_url | default('http://' ~ site.vip ~ '/') }}"
+        return_content: true
+        timeout: 5
+      register: page_on_backup
+      until: page_on_backup.status == 200 and page_on_backup.x_proxy_node | default('') == backup
+      retries: 10
+      delay: 1
+
+    - name: "{{ stopped_service }} | result"
+      ansible.builtin.debug:
+        msg: "VIP {{ site.vip }} moved {{ master }} -> {{ backup }} within ~{{ vip_wait_seconds }} s; page served by {{ page_on_backup.x_proxy_node }}"
+
+  always:
+    - name: "{{ stopped_service }} | systemctl start {{ stopped_service }} on {{ master }}"
+      ansible.builtin.service:
+        name: "{{ stopped_service }}"
+        state: started
+      delegate_to: "{{ master }}"
+      become: true
+
+- name: "{{ stopped_service }} | VIP returns to {{ master }} (higher priority, preemption)"
+  ansible.builtin.include_tasks: vip-holder.yml
+  vars:
+    expected_holder: "{{ master }}"
+
+- name: "{{ stopped_service }} | page served by {{ master }} again"
+  ansible.builtin.uri:
+    url: "{{ page_url | default('http://' ~ site.vip ~ '/') }}"
+    return_content: true
+    timeout: 5
+  register: page_on_master
+  until: page_on_master.status == 200 and page_on_master.x_proxy_node | default('') == master
+  retries: 10
+  delay: 1

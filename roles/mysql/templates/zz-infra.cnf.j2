@@ -1,0 +1,5 @@
+# Managed by Ansible (roles/mysql). Loaded after mysqld.cnf, so it wins.
+[mysqld]
+# Only the site LAN can reach MySQL; the WAN is blocked again by OPNsense (Phase 5).
+bind-address        = {{ ansible_host }}
+mysqlx-bind-address = 127.0.0.1

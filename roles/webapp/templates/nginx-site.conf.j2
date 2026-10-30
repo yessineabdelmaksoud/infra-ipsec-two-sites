@@ -1,0 +1,30 @@
+# Managed by Ansible (roles/webapp)
+server {
+    listen 80 default_server;
+    server_name _;
+    root /var/www/infra;
+    index index.php;
+
+    # HAProxy health check: Nginx is up.
+    location = /health {
+        access_log off;
+        default_type text/plain;
+        return 200 "OK\n";
+    }
+
+    # The source address Nginx sees. Over IPsec it must be the peer VM's own
+    # LAN address, which proves no NAT happens between the two LANs.
+    location = /whoami {
+        default_type text/plain;
+        return 200 "$remote_addr\n";
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+    }
+}

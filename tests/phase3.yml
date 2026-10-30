@@ -1,0 +1,64 @@
+# Phase 3 validation: the web page shows data read from MySQL, `app` logs in
+# from the web server (spec acceptance test 3) and from nowhere else.
+
+- name: Phase 3 test | MySQL
+  hosts: db
+  gather_facts: false
+  tasks:
+    - name: MySQL listens on the LAN address only
+      ansible.builtin.command: ss -Hltn sport = :3306
+      register: listen
+      changed_when: false
+      failed_when: listen.stdout is not search(ansible_host ~ ':3306') or listen.stdout is search('0\.0\.0\.0:3306|\*:3306')
+
+- name: Phase 3 test | Database login from the web server (acceptance test 3)
+  hosts: web
+  gather_facts: false
+  tasks:
+    # Same as typing `mysql -h <db> -u app -p` and the password by hand.
+    - name: mysql -h {{ site.db_ip }} -u {{ app_db_user }} -p
+      ansible.builtin.command: >-
+        mysql -h {{ site.db_ip }} -u {{ app_db_user }} {{ app_db_name }}
+        --batch --skip-column-names -e 'SELECT COUNT(*) FROM messages'
+      environment:
+        MYSQL_PWD: "{{ app_db_password }}"
+      register: login
+      changed_when: false
+      failed_when: login.rc != 0 or login.stdout | int < 1
+
+- name: Phase 3 test | The app user is refused from other hosts
+  hosts: haproxy
+  gather_facts: false
+  tasks:
+    # MySQL answers a host with no matching user with an error before any login.
+    - name: Connect to MySQL from {{ inventory_hostname }}
+      ansible.builtin.shell: timeout 3 bash -c 'cat < /dev/tcp/{{ site.db_ip }}/3306' | LC_ALL=C tr -cd '[:print:]' || true
+      register: banner
+      changed_when: false
+      failed_when: banner.stdout is not search('is not allowed to connect')
+
+- name: Phase 3 test | Web page
+  hosts: hypervisor
+  gather_facts: false
+  tasks:
+    - name: The page shows rows read from MySQL
+      ansible.builtin.uri:
+        url: "http://{{ site.web_ip }}/"
+        return_content: true
+      register: page
+      failed_when: >-
+        page.status != 200
+        or site.name not in page.content
+        or 'stored in MySQL on' not in page.content
+
+    - name: Health and whoami endpoints
+      ansible.builtin.uri:
+        url: "http://{{ site.web_ip }}/{{ item }}"
+        return_content: true
+      loop: [health, whoami]
+      register: endpoints
+      failed_when: endpoints.status != 200
+
+    - name: Show what the page says
+      ansible.builtin.debug:
+        msg: "{{ page.content | regex_findall('stored in MySQL on [^<]+') | first }} — page views: {{ page.content | regex_search('id=\"views\">(\\d+)', '\\1') | first }}"

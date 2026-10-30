@@ -1,0 +1,5 @@
+# Reload, not restart: a restart of the MASTER would move the VIP for nothing.
+- name: Reload Keepalived
+  ansible.builtin.service:
+    name: keepalived
+    state: reloaded

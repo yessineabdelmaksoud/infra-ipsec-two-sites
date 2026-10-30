@@ -1,0 +1,44 @@
+# HAProxy on both proxy nodes, identical config. It binds the VIP even on the
+# node that does not hold it yet (ip_nonlocal_bind), so a failover needs no
+# HAProxy restart: Keepalived only moves the address.
+
+- name: Install HAProxy
+  ansible.builtin.apt:
+    name: haproxy
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Allow binding the VIP before this node owns it
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/60-infra-haproxy.conf
+
+- name: Certificate directory
+  ansible.builtin.file:
+    path: /etc/haproxy/certs
+    state: directory
+    mode: "0700"
+
+# Self-signed certificate made on the hypervisor (playbooks/phase4.yml), the
+# same on both nodes so HTTPS keeps working after a failover.
+- name: TLS certificate and key for port 443
+  ansible.builtin.copy:
+    src: "{{ tls_dir }}/site-{{ site_id }}.pem"
+    dest: /etc/haproxy/certs/site.pem
+    mode: "0600"
+  notify: Reload HAProxy
+
+- name: haproxy.cfg
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: "0644"
+    validate: haproxy -c -f %s
+  notify: Reload HAProxy
+
+- name: HAProxy is enabled and running
+  ansible.builtin.service:
+    name: haproxy
+    state: started
+    enabled: true

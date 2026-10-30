@@ -1,0 +1,30 @@
+# Phase 4 — HAProxy + Keepalived on the two proxy nodes; the VIP fronts the web server.
+# Test: make test-phase4 SITE=<a|b>
+
+- name: Phase 4 | Self-signed certificate for HTTPS (port 443)
+  hosts: hypervisor
+  gather_facts: false
+  tasks:
+    - name: Certificate directory
+      ansible.builtin.file:
+        path: "{{ tls_dir }}"
+        state: directory
+        mode: "0700"
+
+    # Valid for the names a browser will use: the OPNsense WAN address and the VIP.
+    - name: Create key + certificate (once)
+      ansible.builtin.shell: |
+        set -e
+        openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=site-{{ site_id }}.lab" \
+          -addext "subjectAltName=DNS:site-{{ site_id }}.lab,IP:{{ site.wan_ip }},IP:{{ site.vip }}" \
+          -keyout site-{{ site_id }}.key -out site-{{ site_id }}.crt 2>/dev/null
+        cat site-{{ site_id }}.crt site-{{ site_id }}.key > site-{{ site_id }}.pem
+        chmod 600 site-{{ site_id }}.key site-{{ site_id }}.pem
+      args:
+        chdir: "{{ tls_dir }}"
+        creates: "{{ tls_dir }}/site-{{ site_id }}.pem"
+
+- name: Phase 4 | HAProxy and Keepalived
+  hosts: haproxy
+  become: true
+  roles: [haproxy, keepalived]

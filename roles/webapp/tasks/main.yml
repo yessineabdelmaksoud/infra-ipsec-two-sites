@@ -1,0 +1,63 @@
+# Nginx + PHP-FPM on the web VM. The page reads its content from MySQL.
+# Two plain-text endpoints served by Nginx itself:
+#   /health  -> "OK"           HAProxy health check (Phase 4)
+#   /whoami  -> client address  proves there is no NAT between the LANs (Phase 6)
+
+- name: Install Nginx, PHP-FPM and the MySQL client
+  ansible.builtin.apt:
+    name: [nginx, php-fpm, php-mysql, mysql-client]
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Application directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/infra-app, group: www-data, mode: "0750"}
+    - {path: /var/www/infra, group: root, mode: "0755"}
+
+# The password lives outside the web root, readable by PHP (www-data) only.
+- name: Database connection settings
+  ansible.builtin.template:
+    src: config.php.j2
+    dest: /etc/infra-app/config.php
+    owner: root
+    group: www-data
+    mode: "0640"
+
+- name: Web page
+  ansible.builtin.copy:
+    src: index.php
+    dest: /var/www/infra/index.php
+    mode: "0644"
+
+- name: Nginx site
+  ansible.builtin.template:
+    src: nginx-site.conf.j2
+    dest: /etc/nginx/sites-available/infra
+    mode: "0644"
+  notify: Reload Nginx
+
+- name: Enable the site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/infra
+    dest: /etc/nginx/sites-enabled/infra
+    state: link
+  notify: Reload Nginx
+
+- name: Disable the default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload Nginx
+
+- name: Nginx and PHP-FPM are enabled and running
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [nginx, php8.3-fpm]

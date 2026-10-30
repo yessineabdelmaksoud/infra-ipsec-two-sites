@@ -14,6 +14,8 @@ sites:
     wan_ip: 192.168.100.11       # OPNsense WAN
     wan_host_ip: 192.168.100.1   # upstream gateway = this site's hypervisor
     web_ip: 10.0.2.7
+    db_ip: 10.0.2.8
+    color: "#1f5fbf"             # page header colour, to tell the sites apart in demos
   b:
     name: Site B
     lan_cidr: 10.15.15.0/24
@@ -25,6 +27,8 @@ sites:
     # In lab mode both sites share Site A's hypervisor bridge.
     wan_host_ip: "{{ '192.168.100.1' if deployment_mode == 'lab' else '192.168.100.2' }}"
     web_ip: 10.15.15.7
+    db_ip: 10.15.15.8
+    color: "#1d8a4e"
 
 # Derived from the site inventory's `site_id` / `peer_site_id`.
 site: "{{ sites[site_id] }}"
@@ -38,6 +42,9 @@ wan_cidr: 192.168.100.0/24
 wan_prefix: 24
 wan_network_name: infra-wan
 wan_bridge: virbr-iwan
+# libvirt filter on each OPNsense WAN card: drops packets towards the lab LANs
+# (they are private addresses, not routable on the "Internet").
+wan_filter_name: infra-wan-no-lab-lan
 
 # Hypervisor layout
 libvirt_uri: qemu:///system
@@ -52,10 +59,28 @@ ubuntu_image:
   sha256: 04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
   volume: ubuntu-24.04-20261017-base.qcow2
 
+opnsense_image:
+  version: "26.7"
+  url: https://pkg.opnsense.org/releases/mirror/OPNsense-26.7-nano-amd64.img.bz2
+  sha256: 28d5e2f37e40d87468a924e3006ef10e2ddc6de485b85333d9e3958c84d0cb9d   # of the .bz2
+  volume: opnsense-26.7-nano-base.img
+
+# Application (Phase 3). Passwords are generated once into .secrets/ (gitignored).
+app_db_name: infra
+app_db_user: app
+app_db_password: "{{ lookup('ansible.builtin.password', secrets_dir ~ '/mysql-app-' ~ site_id, length=20, chars=['ascii_letters', 'digits']) }}"
+
+# HAProxy + Keepalived (Phase 4)
+vrrp_priority: {MASTER: 150, BACKUP: 100}
+# VRRP PASS authentication only uses the first 8 characters.
+vrrp_auth_pass: "{{ lookup('ansible.builtin.password', secrets_dir ~ '/vrrp-' ~ site_id, length=8, chars=['ascii_letters', 'digits']) }}"
+haproxy_stats_port: 8404
+tls_dir: "{{ secrets_dir }}/tls"
+
 # Guest defaults (overridden per group)
 vm_user: infra
 vm_vcpus: 1
 vm_memory_mb: 512
 vm_disk_gb: 10
-# Stable MAC derived from the LAN address: 10.0.2.7 -> 52:54:00:00:02:07
-vm_mac: "{% set o = ansible_host.split('.') %}52:54:00:{{ '%02x:%02x:%02x' | format(o[1] | int, o[2] | int, o[3] | int) }}"
+# Stable MAC derived from an IPv4 address (the LAN address for Linux VMs): 10.0.2.7 -> 52:54:00:00:02:07
+vm_mac: "{{ ansible_host | mac_from_ip }}"

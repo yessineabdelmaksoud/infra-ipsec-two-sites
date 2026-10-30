@@ -105,9 +105,9 @@ inventories/common/          shared: addressing of both sites, IPsec params, VM 
 inventories/site_a/          Site A: hosts + site variables
 inventories/site_b/          Site B: hosts + site variables
 playbooks/                   one playbook per phase
-roles/                       hypervisor, libvirt_network, libvirt_vm, opnsense, mysql, webapp, haproxy, keepalived
-tests/                       one validation playbook per phase + acceptance.yml
-deliverables/                generated: diagram, addressing plan, OPNsense XML, keepalived.conf, haproxy.cfg
+roles/                       hypervisor, libvirt_network, libvirt_vm, opnsense_vm, base, mysql, webapp, haproxy, keepalived
+tests/                       one validation playbook per phase + acceptance.yml (+ report template)
+deliverables/                diagram, addressing plan, redacted OPNsense XML, keepalived.conf, haproxy.cfg, acceptance reports
 .secrets/ .cache/ .venv/     gitignored: keys/passwords, downloaded images, toolchain
 ```
 
@@ -145,67 +145,100 @@ Lessons (Ubuntu 26.04 AppArmor):
 
 ### Phase 2 — OPNsense
 
+Approach (decided 2026-10-26): **automate the VM and the console bootstrap, configure
+the rest in the web UI by hand** (the user wants to learn the OPNsense UI), then
+capture the result as `config.xml` (`make opnsense-backup`). Step-by-step UI guide
+with values: [docs/02-phase2-opnsense.md](docs/02-phase2-opnsense.md).
+
 Tasks
-- [ ] Download + verify OPNsense nano image (pinned version), per-site overlay disk
-- [ ] Domain with `vtnet0` = LAN (`infra-<site>-lan`), `vtnet1` = WAN (`infra-wan`)
-- [ ] Unattended bootstrap over the serial console (pexpect): LAN IP, enable SSH with key
-- [ ] Ansible applies the site config (`config.xml` edits): interfaces, WAN static IP + gateway, Unbound DNS, outbound NAT for the LAN, LAN-side GUI/SSH only, then reload
-- [ ] Spike first: confirm the config-injection mechanism on the pinned OPNsense version and record it here
+- [x] Download + verify OPNsense **26.7 nano** image (pinned, SHA-256), per-site qcow2 overlay
+- [x] Domain with `vtnet0` = LAN (`infra-<site>-lan`), `vtnet1` = WAN (`infra-wan`), MACs from the IPs
+- [x] Unattended console bootstrap (`scripts/opnsense_console.py`, pexpect): LAN/WAN addresses + WAN gateway; skipped when the UI already answers
+- [ ] **User, web UI** (per site): wizard (hostname, DNS, WAN static + gateway, *uncheck* block private/bogon, LAN without DHCP, root password), GUI + SSH on LAN only, root SSH key
+- [ ] `make opnsense-backup` → `.secrets/opnsense/<fw>-config.xml`
+- [x] Spike: config injection mechanism recorded below
+
+Spike findings (OPNsense 26.7 nano, 2026-10-26)
+- First boot auto-assigns interfaces in NIC order (vtnet0 → LAN, vtnet1 → WAN); LAN factory address 192.168.1.1.
+- Boot shows *"Press any key to start the configuration importer"*: it imports `/conf/config.xml`
+  from an attached device → usable later to restore a saved config unattended. The console
+  script therefore never types during boot.
+- Factory rules already give Internet to the LAN (LAN allow-any, automatic source NAT, Unbound on).
+- 26.7 renamed NAT pages: *Outbound* → **Firewall → NAT → Source NAT**, *Port Forward* → **Destination NAT**.
+- The wizard shows the WAN gateway empty although `WAN_GW` exists → guide says to type it.
+- Wizard defaults *Configure DHCP server* on LAN and *Block RFC1918/bogons* on WAN → guide says to uncheck
+  (our "Internet" 192.168.100.0/24 is private).
 
 Validation (`tests/phase2.yml`)
-- OPNsense reachable on `.1` (SSH/HTTPS) from the LAN, GUI **not** reachable from WAN
-- each VM: `ping 1.1.1.1`, DNS resolution via `.1`, `apt-get update` succeeds
-- `traceroute` first hop from a VM is `.1`
+- OPNsense VM running; web UI answers on `https://<lan .1>`; TCP 443/80/22 closed on the WAN address
+- each VM: first hop (`tracepath`) is `.1`, `ping 1.1.1.1`, DNS via `.1` (`dig`), `apt-get update`
+
+Result (2026-10-26): **passes for Site A and Site B (lab)** after the automated part (fresh
+firewall bootstrapped in ~70 s); sites still isolated from each other (A→B LAN ping fails).
+To re-run after the user's UI steps.
 
 ### Phase 3 — Web and MySQL
 
 Tasks
-- [ ] Role `mysql`: `mysql-server`, `bind-address` = LAN IP, database `infra`, table with seed rows identifying the site, user `app`@`<web IP>` only
-- [ ] Role `webapp`: Nginx + PHP-FPM page querying MySQL (shows site name, rows, DB host, served-by hostname), `/health` endpoint for HAProxy
+- [x] Role `base`: stop apt timers, remove unattended-upgrades (held the dpkg lock as soon as the VMs had Internet)
+- [x] Role `mysql`: `mysql-server` 8.0, `bind-address` = LAN IP, database `infra` (messages + page_views), user `app`@`<web IP>` only, least privilege; plain idempotent SQL (`community.mysql` is not in the pinned bundle)
+- [x] Role `webapp`: Nginx + PHP-FPM page querying MySQL (site name, rows, live page counter, proxy node, web, DB), `/health` (HAProxy) and `/whoami` (Phase 6 no-NAT proof)
 
 Validation (`tests/phase3.yml`)
 - from web VM: `mysql -h <db> -u app -p` logs in (spec acceptance test 3)
 - `curl http://<web>/` contains rows read from MySQL
-- `app` user cannot log in from another host (e.g. haproxy1)
+- `app` user refused from another host (haproxy1 gets *Host ... is not allowed to connect*); MySQL bound to the LAN IP only
+
+Result (2026-10-30): **passed** for Site A and Site B (lab); re-run `changed=0`.
+Lesson: an nginx reload that cannot bind (`listen IP:80` next to the old `*:80`) keeps the old config and only logs the error → `listen 80`.
 
 ### Phase 4 — Keepalived and HAProxy
 
 Tasks
-- [ ] Role `haproxy`: frontend `:80`, backend web with `option httpchk GET /health`, stats on LAN
-- [ ] Role `keepalived`: VRRP instance, MASTER prio 150 / BACKUP 100, `virtual_router_id` per site, `auth_pass` from secrets, unicast peers, `track_script` on haproxy
-- [ ] `net.ipv4.ip_nonlocal_bind=1` so HAProxy binds the VIP on both nodes
+- [x] Role `haproxy`: frontend VIP:80 + VIP:443 (self-signed cert made on the hypervisor, same on both nodes), backend web with `GET /health` checks, `X-Proxy-Node` header, stats on LAN `:8404`
+- [x] Role `keepalived`: VRRP instance, MASTER prio 150 / BACKUP 100, `virtual_router_id` 51/52, `auth_pass` from secrets, unicast peers, `track_script` on haproxy
+- [x] `net.ipv4.ip_nonlocal_bind=1` so HAProxy binds the VIP on both nodes
 
 Validation (`tests/phase4.yml`)
 - VIP on haproxy1 only; `curl http://VIP/` returns the DB-backed page
 - `systemctl stop keepalived` on MASTER → VIP on haproxy2 within ~3 s; continuous curl loop shows no outage beyond a few requests; restart → VIP back (preempt)
 - stopping `haproxy` on MASTER also moves the VIP (track_script)
 
+Result (2026-10-30): **passed** for Site A and Site B (lab): keepalived stop → VIP on BACKUP in ~1 s,
+haproxy stop → ~4 s, VIP returns on restart (preemption); re-run `changed=0`.
+
 ### Phase 5 — NAT and firewall
 
+Approach: same as Phase 2 — **web UI by hand** ([docs/05](docs/05-phase5-nat-firewall.md)), checked by `tests/phase5.yml`.
+
 Tasks
-- [ ] OPNsense port forwards WAN TCP 80/443 → VIP (with associated, logged pass rules)
-- [ ] WAN default deny (logged); explicit no access to 3306/22/GUI from WAN
-- [ ] LAN rules minimal: LAN → any (Internet), LAN → OPNsense mgmt
-- [ ] Optional: HTTPS on 443 (self-signed cert terminated on HAProxy) so the 443 forward is meaningful
+- [x] Step-by-step UI guide with values for both sites
+- [ ] **User, web UI**: Destination NAT WAN TCP 80/443 → VIP (with associated, logged pass rules)
+- [ ] **User, web UI**: WAN default deny logged (+ optional explicit logged block of 3306); LAN rules left minimal
+- [x] HTTPS on 443 (self-signed cert terminated on HAProxy, Phase 4) so the 443 forward is meaningful
 
 Validation (`tests/phase5.yml`, run from the hypervisor = WAN side)
-- `curl http://192.168.100.1x/` returns the page (acceptance test 1)
-- `nc -zv 192.168.100.1x 3306` refused/timeout; also 22 and GUI ports blocked (acceptance test 4)
+- `http://` and `https://192.168.100.1x/` return the page, not the OPNsense GUI (acceptance test 1)
+- TCP 3306, 22, 8404 on the WAN address: no answer (acceptance test 4)
 - HA failover still works through the WAN path
+
+Status (2026-10-30): test written; 3306/22/8404 already blocked (default deny), web via WAN waits for the UI steps.
 
 ### Phase 6 — IPsec tunnel (both students)
 
+Approach: **web UI by both students** ([docs/06](docs/06-phase6-ipsec.md), VPN → IPsec → Connections), checked by `tests/phase6.yml`.
+
 Tasks
-- [ ] Decide and implement the WAN interconnection between the two computers (§2.5), `make wan-link`
-- [ ] Shared IPsec parameters in `inventories/common` (IKEv2, AES-256/SHA-256/DH14, 28800 s; ESP AES-256-GCM, PFS DH14, 3600 s; DPD) + shared PSK file
-- [ ] OPNsense IPsec connection (swanctl): local/remote = own/peer WAN, mirrored child SA LAN↔LAN, **no NAT** between LANs (outbound NAT exception)
-- [ ] WAN rules: UDP 500, UDP 4500, ESP from peer WAN only; IPsec interface rules: peer LAN ↔ local LAN (ICMP + needed ports)
-- [ ] Export `config.xml` of each OPNsense to `deliverables/`
+- [x] WAN interconnection of two computers: Ethernet cable bridged into `virbr-iwan` (`sudo scripts/wan-link.sh <iface>`) — written, **not yet tried with two computers**
+- [x] IPsec values agreed and documented (IKEv2, AES-256/SHA-256/DH14, 28800 s; ESP AES-256-GCM, PFS DH14, 3600 s; DPD 10 s) + `make ipsec-psk`
+- [x] Lab-mode leak closed: libvirt nwfilter on each OPNsense WAN card drops traffic to the lab LANs (the hypervisor routed A→B outside the tunnel, with masquerade); checked in `tests/phase2.yml`
+- [ ] **Both students, web UI**: PSK, connection + child (mirrored), WAN rules UDP 500/4500/ESP from peer only, IPsec rules ICMP + HTTP from peer LAN
+- [x] `make deliverables`: redacted `config.xml` of each OPNsense, keepalived.conf, haproxy.cfg
 
 Validation (`tests/phase6.yml` + `tests/acceptance.yml`)
-- `swanctl --list-sas` on both: IKE SA ESTABLISHED + CHILD SA INSTALLED with the agreed proposals
-- from `10.0.2.7`: `ping 10.15.15.7` succeeds; on B-web `tcpdump` shows source 10.0.2.7 (no NAT)
-- all six acceptance tests (spec §7) pass; screenshots collected for the report
+- `swanctl --list-sas` (over SSH, if enabled): IKE SA ESTABLISHED + CHILD SA INSTALLED for the two LANs
+- from `10.0.2.7`: `ping 10.15.15.7` succeeds; `curl http://10.15.15.7/whoami` prints `10.0.2.7` (no NAT)
+- all six acceptance tests (spec §7) pass; report written to `deliverables/site_<x>/acceptance-report.md`
 
 ## 4. Acceptance tests → automation
 
@@ -220,11 +253,11 @@ Validation (`tests/phase6.yml` + `tests/acceptance.yml`)
 
 ## 5. Deliverables (spec §8)
 
-1. Network diagram → `deliverables/network-diagram` (from §2.3, updated after Phase 6)
-2. Addressing plan → §2.2 / `deliverables/addressing-plan.md`
-3. OPNsense XML exports → `deliverables/site_{a,b}-opnsense-config.xml`
-4. `keepalived.conf`, `haproxy.cfg` → fetched from the VMs into `deliverables/site_{a,b}/`
-5. Report screenshots → manual, guided by `tests/acceptance.yml` output
+1. Network diagram → `deliverables/network-diagram.svg` (+ `.png`) — done
+2. Addressing plan → `deliverables/addressing-plan.md` (rendered from the inventory) — done
+3. OPNsense XML exports → `deliverables/site_{a,b}/<fw>-config.redacted.xml` — after the GUI steps + `make opnsense-backup`
+4. `keepalived.conf`, `haproxy.cfg` → `deliverables/site_{a,b}/<node>/` (VRRP password redacted) — Site A collected
+5. Report → `make acceptance` report + screenshots + [docs/report-template.md](docs/report-template.md)
 
 ## 6. Risks and open points
 
@@ -233,6 +266,10 @@ Validation (`tests/phase6.yml` + `tests/acceptance.yml`)
 - **Docker FORWARD DROP** can silently break libvirt NAT → handled by the bootstrap hook; checked in Phase 2 tests.
 - **RAM on a lab host**: both sites' 8 Linux VMs leave ~5.7 GiB available on this laptop (desktop apps included); two OPNsense VMs add ~3 GiB. Mitigation: OPNsense at 1 GiB if needed, or stop the other site's VMs when not testing Phase 6.
 - Failover covers HAProxy/Keepalived only — not web, MySQL or OPNsense (spec §10). Not claimed otherwise.
+- **OPNsense nano unbootable after a hard power-off** (found 2026-10-30: both firewalls hung before the
+  FreeBSD loader after the laptop was switched off with the VMs running; reproduced with `virsh destroy`,
+  a clean shutdown is fine). Mitigation: `make down`, libvirt-guests `ON_SHUTDOWN=shutdown` in the
+  bootstrap, `make opnsense-rebuild`, and `make opnsense-backup` after every GUI session.
 
 ## 7. Progress log
 
@@ -241,4 +278,10 @@ Validation (`tests/phase6.yml` + `tests/acceptance.yml`)
 | 2026-10-24 | Plan | done | Environment inspected, architecture decided |
 | 2026-10-24 | 1 | in progress | Code written, syntax-checked, templates rendered for A, B, B-lab |
 | 2026-10-25 | 1 | **done** | `make test-phase1` passes for A and B (lab); two AppArmor issues fixed (see Phase 1) |
-| 2026-10-25 | 2 | next | Start with the OPNsense config-injection spike |
+| 2026-10-26 | 2 | automated part done | OPNsense VM + console bootstrap; `make test-phase2` passes A and B (lab). Waiting for the UI steps (docs/02) + backup |
+| 2026-10-26 | docs | done | `docs/` learning pages for setup, Phase 1, Phase 2 |
+| 2026-10-30 | 2 | rebuilt | Both OPNsense disks unbootable after a hard power-off → `make opnsense-rebuild`; WAN nwfilter added (lab-mode A↔B leak) |
+| 2026-10-30 | 3 | **done** | `make test-phase3` passes A and B (lab) |
+| 2026-10-30 | 4 | **done** | `make test-phase4` passes A and B (lab), real failover ~1 s / ~4 s |
+| 2026-10-30 | 5, 6 | guides + tests ready | Waiting for the GUI steps (docs/05, docs/06) |
+| 2026-10-30 | 7 | tooling done | `make acceptance` (report), `make deliverables` (redacted configs), diagram, docs 03–08, report template |

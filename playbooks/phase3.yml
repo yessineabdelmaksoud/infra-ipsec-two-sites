@@ -1,0 +1,17 @@
+# Phase 3 — MySQL on the db VM, Nginx + PHP page on the web VM.
+# Test: make test-phase3 SITE=<a|b>
+
+- name: Phase 3 | Common base of the Linux VMs
+  hosts: linux_vms
+  become: true
+  roles: [base]
+
+- name: Phase 3 | MySQL
+  hosts: db
+  become: true
+  roles: [mysql]
+
+- name: Phase 3 | Web server
+  hosts: web
+  become: true
+  roles: [webapp]

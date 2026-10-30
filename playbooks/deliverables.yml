@@ -1,0 +1,78 @@
+# Collects the project deliverables (spec §8) of SITE into deliverables/:
+#   addressing-plan.md                   from the shared inventory (both sites)
+#   site_<x>/<node>/keepalived.conf      from the two proxy nodes (VRRP password redacted)
+#   site_<x>/<node>/haproxy.cfg
+#   site_<x>/<fw>-config.redacted.xml    OPNsense export without secrets
+# The network diagram (deliverables/network-diagram.svg) is drawn by hand.
+
+- name: Deliverables | Proxy configuration files
+  hosts: haproxy
+  gather_facts: false
+  vars:
+    out: "{{ repo_root }}/deliverables/site_{{ site_id }}/{{ inventory_hostname }}"
+  tasks:
+    - name: Read keepalived.conf and haproxy.cfg
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop: [/etc/keepalived/keepalived.conf, /etc/haproxy/haproxy.cfg]
+      register: confs
+      become: true
+
+    - name: Output directory
+      ansible.builtin.file:
+        path: "{{ out }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+
+    - name: Save them (the VRRP password is replaced by REDACTED)
+      ansible.builtin.copy:
+        content: "{{ item.content | b64decode | regex_replace('(auth_pass)\\s+\\S+', '\\1 REDACTED') }}"
+        dest: "{{ out }}/{{ item.source | basename }}"
+        mode: "0644"
+      loop: "{{ confs.results }}"
+      loop_control:
+        label: "{{ item.source }}"
+      delegate_to: localhost
+
+- name: Deliverables | Addressing plan and OPNsense export
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    fw: "{{ groups['opnsense'][0] }}"
+    backup: "{{ secrets_dir }}/opnsense/{{ fw }}-config.xml"
+  tasks:
+    - name: Addressing plan
+      ansible.builtin.template:
+        src: templates/addressing-plan.md.j2
+        dest: "{{ repo_root }}/deliverables/addressing-plan.md"
+        mode: "0644"
+
+    - name: Fresh OPNsense backup when SSH is enabled (else keep the last one)
+      ansible.builtin.command: >-
+        scp -q -i {{ secrets_dir }}/infra_ed25519 -o BatchMode=yes -o ConnectTimeout=5
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+        root@{{ site.lan_gateway }}:/conf/config.xml {{ backup }}
+      register: scp
+      changed_when: scp.rc == 0
+      failed_when: false
+
+    - name: Is there an OPNsense backup?
+      ansible.builtin.stat:
+        path: "{{ backup }}"
+      register: backup_file
+
+    - name: Redacted OPNsense XML
+      ansible.builtin.command: >-
+        {{ ansible_playbook_python }} {{ repo_root }}/scripts/redact_opnsense_xml.py
+        {{ backup }} {{ repo_root }}/deliverables/site_{{ site_id }}/{{ fw }}-config.redacted.xml
+      when: backup_file.stat.exists
+      changed_when: true
+
+    - name: No OPNsense export yet
+      ansible.builtin.debug:
+        msg: >-
+          No {{ backup }}: enable SSH on OPNsense (docs/02 steps 4-5) and run
+          `make opnsense-backup SITE={{ site_id }}`, or download it from
+          System -> Configuration -> Backups and save it there.
+      when: not backup_file.stat.exists

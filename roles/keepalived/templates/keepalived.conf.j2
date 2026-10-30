@@ -1,0 +1,39 @@
+# Managed by Ansible (roles/keepalived) — {{ site.name }}, node {{ inventory_hostname }} ({{ keepalived_state }})
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+# Health of the local HAProxy. If it stops, this node gives the VIP away.
+vrrp_script chk_haproxy {
+    script "/usr/bin/systemctl is-active --quiet haproxy"
+    interval 2      # check every 2 s
+    fall 2          # 2 failures  -> FAULT (VIP released)
+    rise 2          # 2 successes -> healthy again
+}
+
+vrrp_instance VI_SITE_{{ site_id | upper }} {
+    state {{ keepalived_state }}                 # starting role; priority decides
+    interface lan0
+    virtual_router_id {{ site.vrrp_router_id }}  # unique per site (A=51, B=52)
+    priority {{ vrrp_priority[keepalived_state] }}  # MASTER 150 > BACKUP 100
+    advert_int 1                    # "I am alive" every second
+    # Unicast: the two nodes talk directly instead of using multicast.
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% for node in groups['haproxy'] | difference([inventory_hostname]) %}
+        {{ hostvars[node].ansible_host }}
+{% endfor %}
+    }
+    authentication {
+        auth_type PASS
+        auth_pass {{ vrrp_auth_pass }}
+    }
+    virtual_ipaddress {
+        {{ site.vip }}/{{ lan_prefix }} dev lan0
+    }
+    track_script {
+        chk_haproxy
+    }
+}

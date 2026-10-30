@@ -1,0 +1,21 @@
+# Keepalived (VRRP) owns the VIP: on the MASTER while it is healthy, else on
+# the BACKUP. Healthy = keepalived running AND haproxy active (track_script).
+
+- name: Install Keepalived
+  ansible.builtin.apt:
+    name: keepalived
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: keepalived.conf
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    mode: "0640"   # holds the VRRP password
+  notify: Reload Keepalived
+
+- name: Keepalived is enabled and running
+  ansible.builtin.service:
+    name: keepalived
+    state: started
+    enabled: true

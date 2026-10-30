@@ -1,0 +1,61 @@
+# Phase 6 validation: the IPsec tunnel joins the two LANs without NAT.
+# The tunnel itself is configured in the web UI: docs/06-phase6-ipsec.md
+#   - OPNsense: IKE SA ESTABLISHED + CHILD SA INSTALLED (needs SSH enabled on the
+#     firewall, docs/02 step 4-5; otherwise read VPN -> IPsec -> Status Overview)
+#   - local web VM -> peer web VM: ping (acceptance test 6) and HTTP
+#   - the peer sees our real LAN address (/whoami), so nothing is translated
+
+- name: Phase 6 test | IPsec status on OPNsense
+  hosts: hypervisor
+  gather_facts: false
+  tasks:
+    - name: swanctl --list-sas on {{ groups['opnsense'][0] }}
+      ansible.builtin.command: >-
+        ssh -i {{ secrets_dir }}/infra_ed25519 -o BatchMode=yes -o ConnectTimeout=5
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+        root@{{ site.lan_gateway }} swanctl --list-sas
+      register: sas
+      changed_when: false
+      failed_when: false
+
+    - name: Phase 1 (IKE SA) ESTABLISHED and Phase 2 (CHILD SA) INSTALLED for {{ site.lan_cidr }} === {{ peer.lan_cidr }}
+      when: sas.rc != 255
+      ansible.builtin.assert:
+        that:
+          - sas.stdout is search('ESTABLISHED')
+          - sas.stdout is search('INSTALLED')
+          - sas.stdout is search(site.lan_cidr | regex_escape)
+          - sas.stdout is search(peer.lan_cidr | regex_escape)
+        fail_msg: "{{ sas.stdout_lines }}"
+        success_msg: "{{ sas.stdout_lines | select('search', 'ESTABLISHED|INSTALLED|IKEv2|ESP|===') | list }}"
+
+    - name: SSH to OPNsense not enabled — check in the GUI instead
+      when: sas.rc == 255
+      ansible.builtin.debug:
+        msg: "Could not SSH to {{ site.lan_gateway }}: open VPN -> IPsec -> Status Overview and check both phases are up."
+
+- name: Phase 6 test | LAN to LAN through the tunnel
+  hosts: web
+  gather_facts: false
+  tasks:
+    - name: ping {{ peer.web_ip }} from {{ ansible_host }}
+      ansible.builtin.command: ping -c 4 -W 3 {{ peer.web_ip }}
+      register: ping_peer
+      changed_when: false
+      # The first packet may be lost while the tunnel is negotiated on demand.
+      retries: 2
+      until: ping_peer.rc == 0
+
+    - name: The peer web server sees our own LAN address (no NAT between the LANs)
+      ansible.builtin.uri:
+        url: "http://{{ peer.web_ip }}/whoami"
+        return_content: true
+        timeout: 10
+      register: whoami
+      failed_when: whoami.status != 200 or whoami.content | trim != ansible_host
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansible_host }} -> {{ peer.web_ip }}: {{ ping_peer.stdout_lines[-2] }};
+          the peer sees source {{ whoami.content | trim }}

@@ -1,0 +1,67 @@
+# Phase 2 validation: OPNsense is the site router. The VMs reach the Internet
+# and resolve names through it; its web UI answers on the LAN, not on the WAN.
+
+- name: Phase 2 test | OPNsense from the hypervisor
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    fw: "{{ groups['opnsense'][0] }}"
+  tasks:
+    - name: OPNsense VM is running
+      ansible.builtin.command: virsh -c {{ libvirt_uri }} domstate {{ fw }}
+      register: domstate
+      changed_when: false
+      failed_when: domstate.stdout | trim != 'running'
+
+    - name: Web UI answers on the LAN address
+      ansible.builtin.uri:
+        url: "https://{{ site.lan_gateway }}/"
+        validate_certs: false
+        return_content: true
+        timeout: 10
+      register: gui_lan
+      failed_when: gui_lan.status != 200 or 'OPNsense' not in gui_lan.content | default('')
+
+    - name: Web UI and SSH are closed on the WAN address
+      ansible.builtin.wait_for:
+        host: "{{ site.wan_ip }}"
+        port: "{{ item }}"
+        timeout: 5
+      loop: [443, 80, 22]
+      register: wan_ports
+      failed_when: wan_ports is succeeded
+
+- name: Phase 2 test | Internet access through OPNsense
+  hosts: linux_vms
+  gather_facts: false
+  tasks:
+    - name: First hop towards the Internet is OPNsense
+      ansible.builtin.command: tracepath -n -m 1 1.1.1.1
+      register: hop
+      changed_when: false
+      failed_when: hop.stdout is not search(' ' ~ site.lan_gateway | regex_escape ~ ' ')
+
+    - name: Ping a public address
+      ansible.builtin.command: ping -c 2 -W 3 1.1.1.1
+      changed_when: false
+
+    - name: Resolve a name with OPNsense as DNS server
+      ansible.builtin.command: dig +short +time=3 +tries=2 @{{ site.lan_gateway }} archive.ubuntu.com A
+      register: dns
+      changed_when: false
+      failed_when: dns.stdout | trim | length == 0
+
+    - name: Package index download works
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+      become: true
+      changed_when: false   # a test only observes
+
+    # Only the IPsec tunnel (Phase 6) may join the LANs. Before it exists the
+    # peer must not answer; once it exists, the peer must see our real address.
+    - name: The other site is reachable only through IPsec, never via the WAN
+      ansible.builtin.command: curl -s -m 5 http://{{ peer.web_ip }}/whoami
+      register: peer_whoami
+      changed_when: false
+      failed_when: peer_whoami.rc == 0 and peer_whoami.stdout | trim != ansible_host

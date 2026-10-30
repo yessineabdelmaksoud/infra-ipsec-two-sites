@@ -1,0 +1,37 @@
+# MySQL 8.0 on the db VM: listens on the LAN address only, holds the `infra`
+# database and an `app` user that may connect from the web server only.
+# The SQL is plain and idempotent (IF NOT EXISTS / ON DUPLICATE KEY), applied
+# as root through the local socket (root uses auth_socket on Ubuntu: no password).
+
+- name: Install MySQL server
+  ansible.builtin.apt:
+    name: mysql-server
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Listen on the LAN address only
+  ansible.builtin.template:
+    src: zz-infra.cnf.j2
+    dest: /etc/mysql/mysql.conf.d/zz-infra.cnf
+    mode: "0644"
+  notify: Restart MySQL
+
+- name: MySQL is enabled and running
+  ansible.builtin.service:
+    name: mysql
+    state: started
+    enabled: true
+
+- name: Apply configuration changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Render database, table, seed rows and user
+  ansible.builtin.template:
+    src: app.sql.j2
+    dest: /root/infra-app.sql
+    mode: "0600"
+  register: app_sql
+
+- name: Apply the SQL
+  ansible.builtin.shell: mysql --batch < /root/infra-app.sql
+  when: app_sql is changed

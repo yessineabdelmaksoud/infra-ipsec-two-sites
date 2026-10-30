@@ -1,0 +1,12 @@
+# Phase 2 — OPNsense VM, console bootstrap (interfaces + addresses), then the
+# web UI steps from docs/02-phase2-opnsense.md. Test: make test-phase2 SITE=<a|b>
+
+- name: Phase 2 | OPNsense
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    fw: "{{ groups['opnsense'][0] }}"
+  tasks:
+    - name: OPNsense VM
+      ansible.builtin.import_role:
+        name: opnsense_vm

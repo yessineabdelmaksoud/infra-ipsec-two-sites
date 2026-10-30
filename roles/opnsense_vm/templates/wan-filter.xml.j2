@@ -1,0 +1,12 @@
+<!-- Managed by Ansible (roles/opnsense_vm). Attached to each OPNsense WAN card.
+     The lab WAN plays the Internet, where private LAN addresses are not routable.
+     Without this filter, the hypervisor (which has an address on both LANs when
+     both sites run on one computer) would forward and masquerade site-to-site
+     traffic outside the IPsec tunnel. -->
+<filter name='{{ wan_filter_name }}' chain='ipv4' priority='-650'>
+{% for s in sites.values() %}
+  <rule action='drop' direction='out' priority='100'>
+    <ip dstipaddr='{{ s.lan_cidr | split('/') | first }}' dstipmask='{{ s.lan_cidr | split('/') | last }}'/>
+  </rule>
+{% endfor %}
+</filter>

@@ -1,0 +1,29 @@
+-- Managed by Ansible (roles/mysql). Safe to run again: nothing is duplicated.
+
+CREATE DATABASE IF NOT EXISTS {{ app_db_name }} CHARACTER SET utf8mb4;
+USE {{ app_db_name }};
+
+CREATE TABLE IF NOT EXISTS messages (
+  id         INT PRIMARY KEY,
+  message    VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO messages (id, message) VALUES
+  (1, 'Welcome to {{ site.name }}: this text is stored in MySQL on {{ inventory_hostname }} ({{ ansible_host }}).'),
+  (2, 'Path: client -> OPNsense WAN NAT -> VIP {{ site.vip }} -> HAProxy -> Nginx {{ site.web_ip }} -> MySQL {{ ansible_host }}.'),
+  (3, 'The LANs {{ sites.a.lan_cidr }} and {{ sites.b.lan_cidr }} are joined by an IPsec IKEv2 tunnel.')
+ON DUPLICATE KEY UPDATE message = VALUES(message);
+
+-- One counter row, incremented by every page view: proves the data is live.
+CREATE TABLE IF NOT EXISTS page_views (
+  id    TINYINT PRIMARY KEY,
+  total BIGINT NOT NULL DEFAULT 0
+);
+INSERT IGNORE INTO page_views (id, total) VALUES (1, 0);
+
+-- `app` may only connect from the web server's address.
+CREATE USER IF NOT EXISTS '{{ app_db_user }}'@'{{ site.web_ip }}' IDENTIFIED BY '{{ app_db_password }}';
+ALTER USER '{{ app_db_user }}'@'{{ site.web_ip }}' IDENTIFIED BY '{{ app_db_password }}';
+GRANT SELECT ON {{ app_db_name }}.messages TO '{{ app_db_user }}'@'{{ site.web_ip }}';
+GRANT SELECT, UPDATE ON {{ app_db_name }}.page_views TO '{{ app_db_user }}'@'{{ site.web_ip }}';

@@ -20,17 +20,22 @@
       <source file='{{ libvirt_pool_path }}/{{ vm.name }}.qcow2'/>
       <target dev='vda' bus='virtio'/>
     </disk>
+{% if vm.seed | default(true) %}
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='{{ libvirt_pool_path }}/{{ vm.name }}-seed.iso'/>
       <target dev='sda' bus='sata'/>
       <readonly/>
     </disk>
+{% endif %}
 {% for nic in vm.nics %}
     <interface type='network'>
       <source network='{{ nic.network }}'/>
       <mac address='{{ nic.mac }}'/>
       <model type='virtio'/>
+{% if nic.filter is defined %}
+      <filterref filter='{{ nic.filter }}'/>
+{% endif %}
     </interface>
 {% endfor %}
     <serial type='pty'><target port='0'/></serial>

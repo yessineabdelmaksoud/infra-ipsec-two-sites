@@ -1,0 +1,154 @@
+# Creates the site's OPNsense VM from the official nano image (preinstalled,
+# serial console). NIC order fixes the FreeBSD names: vtnet0 = LAN, vtnet1 = WAN.
+
+- name: Create build directory
+  ansible.builtin.file:
+    path: "{{ cache_dir }}/build"
+    state: directory
+    mode: "0700"
+
+- name: Download OPNsense nano image (SHA-256 verified)
+  ansible.builtin.get_url:
+    url: "{{ opnsense_image.url }}"
+    dest: "{{ cache_dir }}/images/{{ opnsense_image.url | basename }}"
+    checksum: "sha256:{{ opnsense_image.sha256 }}"
+    mode: "0644"
+  register: opnsense_download
+  retries: 3
+  delay: 5
+  until: opnsense_download is succeeded
+
+- name: Decompress OPNsense image
+  ansible.builtin.command:
+    cmd: bunzip2 -k {{ opnsense_image.url | basename }}
+    chdir: "{{ cache_dir }}/images"
+    creates: "{{ cache_dir }}/images/{{ opnsense_image.url | basename | splitext | first }}"
+
+- name: Check OPNsense base volume
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} vol-info --pool {{ libvirt_pool }} {{ opnsense_image.volume }}
+  register: opnsense_base_vol
+  changed_when: false
+  failed_when: false
+
+- name: Upload OPNsense base image into the pool
+  when: opnsense_base_vol.rc != 0
+  ansible.builtin.shell: |
+    set -e
+    img={{ opnsense_image.url | basename | splitext | first }}
+    virsh -c {{ libvirt_uri }} vol-create-as {{ libvirt_pool }} {{ opnsense_image.volume }} $(stat -c %s $img)b --format raw
+    virsh -c {{ libvirt_uri }} vol-upload --pool {{ libvirt_pool }} {{ opnsense_image.volume }} $img
+  args:
+    chdir: "{{ cache_dir }}/images"
+
+# A hard power-off (host shut down with the VM running, `virsh destroy`) can
+# leave the nano image unbootable: it hangs before the FreeBSD loader prints
+# anything. `make opnsense-rebuild` starts again from a fresh disk.
+- name: Remove the OPNsense VM and its disk (opnsense_rebuild=true)
+  ansible.builtin.shell: |
+    virsh -c {{ libvirt_uri }} destroy {{ fw }} >/dev/null 2>&1 || true
+    virsh -c {{ libvirt_uri }} vol-delete --pool {{ libvirt_pool }} {{ fw }}.qcow2 >/dev/null 2>&1 || true
+  when: opnsense_rebuild | default(false) | bool
+  changed_when: true
+
+- name: Check OPNsense disk
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} vol-info --pool {{ libvirt_pool }} {{ fw }}.qcow2
+  register: opnsense_disk
+  changed_when: false
+  failed_when: false
+
+- name: Create OPNsense disk as overlay of the nano image
+  ansible.builtin.command: >-
+    virsh -c {{ libvirt_uri }} vol-create-as {{ libvirt_pool }} {{ fw }}.qcow2 {{ hostvars[fw].vm_disk_gb }}G
+    --format qcow2 --backing-vol {{ opnsense_image.volume }} --backing-vol-format raw
+  when: opnsense_disk.rc != 0
+
+- name: Render the WAN filter (lab LANs are not routable on the "Internet")
+  ansible.builtin.template:
+    src: wan-filter.xml.j2
+    dest: "{{ cache_dir }}/build/{{ wan_filter_name }}.xml"
+    mode: "0644"
+  register: wan_filter_file
+
+- name: Check the WAN filter exists in libvirt
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} nwfilter-dumpxml {{ wan_filter_name }}
+  register: wan_filter
+  changed_when: false
+  failed_when: false
+
+- name: Define the WAN filter
+  ansible.builtin.command: virsh -c {{ libvirt_uri }} nwfilter-define {{ cache_dir }}/build/{{ wan_filter_name }}.xml
+  when: wan_filter.rc != 0 or wan_filter_file is changed
+
+- name: Define OPNsense domain
+  community.libvirt.virt:
+    uri: "{{ libvirt_uri }}"
+    command: define
+    xml: "{{ lookup('template', repo_root ~ '/roles/libvirt_vm/templates/domain.xml.j2') }}"
+  register: opnsense_domain
+  vars:
+    vm:
+      name: "{{ fw }}"
+      memory_mb: "{{ hostvars[fw].vm_memory_mb }}"
+      vcpus: "{{ hostvars[fw].vm_vcpus }}"
+      seed: false
+      nics:
+        - network: "{{ lan_network_name }}"
+          mac: "{{ site.lan_gateway | mac_from_ip }}"
+        - network: "{{ wan_network_name }}"
+          mac: "{{ site.wan_ip | mac_from_ip }}"
+          filter: "{{ wan_filter_name }}"
+
+- name: Start OPNsense and enable autostart
+  community.libvirt.virt:
+    uri: "{{ libvirt_uri }}"
+    name: "{{ fw }}"
+    state: running
+    autostart: true
+  register: opnsense_started
+
+# Already bootstrapped when the web UI answers on the planned LAN address.
+- name: Check OPNsense web UI on the LAN address
+  ansible.builtin.uri:
+    url: "https://{{ site.lan_gateway }}/"
+    validate_certs: false
+    timeout: 5
+  register: opnsense_gui
+  failed_when: false
+  when: opnsense_started is not changed
+
+- name: Console bootstrap (login, LAN and WAN addresses) — see docs/02-phase2-opnsense.md
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ repo_root }}/scripts/opnsense_console.py"
+      - --uri={{ libvirt_uri }}
+      - --domain={{ fw }}
+      - --lan={{ site.lan_gateway }}/{{ lan_prefix }}
+      - --wan={{ site.wan_ip }}/{{ wan_prefix }}
+      - --wan-gateway={{ site.wan_host_ip }}
+      - --log={{ cache_dir }}/build/{{ fw }}-console.log
+      - "{{ '--fresh' if opnsense_started is changed else '--boot-timeout=120' }}"
+  when: opnsense_started is changed or opnsense_gui.status | default(-1) != 200
+
+# A changed definition (e.g. the WAN filter added to an existing firewall) only
+# applies after a power cycle. Always a clean ACPI shutdown, never `destroy`.
+- name: Reboot cleanly to apply the new VM definition
+  ansible.builtin.shell: |
+    virsh -c {{ libvirt_uri }} shutdown {{ fw }}
+    for i in $(seq 1 60); do
+      [ "$(virsh -c {{ libvirt_uri }} domstate {{ fw }})" = "shut off" ] && break
+      sleep 2
+    done
+    [ "$(virsh -c {{ libvirt_uri }} domstate {{ fw }})" = "shut off" ] || { echo "no clean shutdown"; exit 1; }
+    virsh -c {{ libvirt_uri }} start {{ fw }}
+  when: opnsense_domain is changed and opnsense_started is not changed
+
+- name: Wait for the web UI on the LAN address
+  ansible.builtin.uri:
+    url: "https://{{ site.lan_gateway }}/"
+    validate_certs: false
+    timeout: 5
+  register: opnsense_gui_ready
+  until: opnsense_gui_ready.status == 200
+  retries: 30
+  delay: 5

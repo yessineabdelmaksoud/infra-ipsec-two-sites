@@ -1,0 +1,3 @@
+vm_memory_mb: 1536
+vm_vcpus: 2
+vm_disk_gb: 10

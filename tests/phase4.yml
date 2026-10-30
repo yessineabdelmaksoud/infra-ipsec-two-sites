@@ -1,0 +1,42 @@
+# Phase 4 validation: the VIP is on the MASTER only and serves the page; when
+# keepalived (spec acceptance test 2) or haproxy stops on the MASTER, the BACKUP
+# takes the VIP and the page stays reachable; when it comes back, so does the VIP.
+# The test always restores the services it stopped.
+
+- name: Phase 4 test | VIP and failover
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    nodes: "{{ groups['haproxy'] | map('extract', hostvars) | list }}"
+    master: "{{ (nodes | selectattr('keepalived_state', 'eq', 'MASTER') | first).inventory_hostname }}"
+    backup: "{{ (nodes | selectattr('keepalived_state', 'eq', 'BACKUP') | first).inventory_hostname }}"
+  tasks:
+    - name: Initial state — VIP on {{ master }} only
+      ansible.builtin.include_tasks: tasks/vip-holder.yml
+      vars:
+        expected_holder: "{{ master }}"
+
+    - name: HTTP and HTTPS on the VIP return the database page
+      ansible.builtin.uri:
+        url: "{{ item }}://{{ site.vip }}/"
+        validate_certs: false
+        return_content: true
+      loop: [http, https]
+      register: vip_page
+      failed_when: >-
+        vip_page.status != 200
+        or 'stored in MySQL on' not in vip_page.content
+        or vip_page.x_proxy_node | default('') != master
+
+    - name: HAProxy health check sees the web server UP (stats page)
+      ansible.builtin.uri:
+        url: "http://{{ hostvars[master].ansible_host }}:{{ haproxy_stats_port }}/stats;csv"
+        return_content: true
+      register: stats
+      failed_when: stats.content is not search('(?m)^be_web,' ~ groups['web'][0] ~ ',(?:[^,]*,){15}UP,')
+
+    - name: Failover scenarios
+      ansible.builtin.include_tasks: tasks/failover.yml
+      loop: [keepalived, haproxy]
+      loop_control:
+        loop_var: stopped_service

@@ -1,0 +1,32 @@
+# Starts (-e power=up) or cleanly shuts down (-e power=down) every VM of the site.
+# OPNsense is started first and stopped last: it is the gateway of the others.
+
+- name: Power {{ power | default('up') }}
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    vms: "{{ groups['opnsense'] + groups['db'] + groups['web'] + groups['haproxy'] }}"
+  tasks:
+    - name: Start VMs
+      community.libvirt.virt:
+        uri: "{{ libvirt_uri }}"
+        name: "{{ item }}"
+        state: running
+      loop: "{{ vms }}"
+      when: power | default('up') == 'up'
+
+    - name: Shut down VMs
+      community.libvirt.virt:
+        uri: "{{ libvirt_uri }}"
+        name: "{{ item }}"
+        state: shutdown
+      loop: "{{ vms | reverse }}"
+      when: power | default('up') == 'down'
+
+    - name: Wait for SSH on the Linux VMs
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: 22
+        timeout: 300
+      loop: "{{ groups['linux_vms'] }}"
+      when: power | default('up') == 'up'

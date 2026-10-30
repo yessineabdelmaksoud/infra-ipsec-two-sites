@@ -70,6 +70,14 @@ WantedBy=docker.service
 UNIT
 systemctl daemon-reload
 systemctl enable infra-allow-lab-bridges.service
+
+# When the computer shuts down, power the VMs off cleanly (ACPI) instead of
+# suspending or killing them: a killed OPNsense nano VM may no longer boot.
+if [[ -f /etc/default/libvirt-guests ]]; then
+  sed -i -E 's/^#?\s*ON_SHUTDOWN=.*/ON_SHUTDOWN=shutdown/' /etc/default/libvirt-guests
+  grep -q '^ON_SHUTDOWN=' /etc/default/libvirt-guests || echo 'ON_SHUTDOWN=shutdown' >> /etc/default/libvirt-guests
+  systemctl enable libvirt-guests.service 2>/dev/null || true
+fi
 systemctl start infra-allow-lab-bridges.service || true
 # The network daemon only reads hooks at start.
 systemctl try-restart virtnetworkd.service libvirtd.service 2>/dev/null || true

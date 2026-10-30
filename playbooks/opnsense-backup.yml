@@ -1,0 +1,26 @@
+# Copies the site's OPNsense /conf/config.xml to .secrets/opnsense/ (gitignored:
+# it holds password hashes and the web UI private key). Needs SSH with the lab
+# key enabled in the web UI — docs/02-phase2-opnsense.md, steps 4 and 5.
+
+- name: Back up OPNsense configuration
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    fw: "{{ groups['opnsense'][0] }}"
+  tasks:
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ secrets_dir }}/opnsense"
+        state: directory
+        mode: "0700"
+
+    - name: Copy config.xml from OPNsense
+      ansible.builtin.command: >-
+        scp -q -i {{ secrets_dir }}/infra_ed25519
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+        root@{{ site.lan_gateway }}:/conf/config.xml {{ secrets_dir }}/opnsense/{{ fw }}-config.xml
+      changed_when: true
+
+    - name: Show where it is
+      ansible.builtin.debug:
+        msg: "Saved {{ secrets_dir }}/opnsense/{{ fw }}-config.xml"

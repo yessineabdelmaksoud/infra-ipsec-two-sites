@@ -1,0 +1,160 @@
+# The six mandatory acceptance tests of the specification (§7), in order.
+# Every test runs even if an earlier one fails; the result table and the
+# evidence are written to deliverables/site_<x>/acceptance-report.md for the
+# report. Test 5 needs SSH on OPNsense; without it, it is marked MANUAL
+# (screenshot VPN -> IPsec -> Status Overview).
+
+- name: Acceptance tests (spec §7)
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    nodes: "{{ groups['haproxy'] | map('extract', hostvars) | list }}"
+    master: "{{ (nodes | selectattr('keepalived_state', 'eq', 'MASTER') | first).inventory_hostname }}"
+    backup: "{{ (nodes | selectattr('keepalived_state', 'eq', 'BACKUP') | first).inventory_hostname }}"
+    web: "{{ groups['web'][0] }}"
+    report_dir: "{{ repo_root }}/deliverables/site_{{ site_id }}"
+    results: []
+  tasks:
+    - name: Start time
+      ansible.builtin.command: date '+%Y-%m-%d %H:%M:%S %Z'
+      register: started
+      changed_when: false
+
+    # ---------------------------------------------------------------- 1
+    - name: "1 | Public web access: http://{{ site.wan_ip }}/"
+      block:
+        - name: "1 | GET http://{{ site.wan_ip }}/"
+          ansible.builtin.uri:
+            url: "http://{{ site.wan_ip }}/"
+            return_content: true
+            timeout: 10
+          register: t1
+          failed_when: t1.status != 200 or 'stored in MySQL on' not in t1.content
+        - name: "1 | PASS"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 1, 'status': 'PASS', 'evidence': 'HTTP ' ~ t1.status ~ ' from ' ~ site.wan_ip ~ ', page served by ' ~ t1.x_proxy_node | default('?') ~ ' with rows from MySQL'}] }}"
+      rescue:
+        - name: "1 | FAIL"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 1, 'status': 'FAIL', 'evidence': ansible_failed_result.msg | default('error')}] }}"
+
+    # ---------------------------------------------------------------- 2
+    - name: "2 | High availability: systemctl stop keepalived on {{ master }}"
+      block:
+        - name: "2 | Failover through the WAN address"
+          ansible.builtin.include_tasks: tasks/failover.yml
+          vars:
+            stopped_service: keepalived
+            page_url: "http://{{ site.wan_ip }}/"
+        - name: "2 | PASS"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 2, 'status': 'PASS', 'evidence': 'VIP ' ~ site.vip ~ ' moved ' ~ master ~ ' -> ' ~ backup ~ ', page then served by ' ~ backup ~ ' via ' ~ site.wan_ip ~ '; VIP back on ' ~ master ~ ' after restart'}] }}"
+      rescue:
+        - name: "2 | FAIL"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 2, 'status': 'FAIL', 'evidence': ansible_failed_result.msg | default('error')}] }}"
+
+    # ---------------------------------------------------------------- 3
+    - name: "3 | Database: mysql -h {{ site.db_ip }} -u {{ app_db_user }} -p (from {{ web }})"
+      block:
+        - name: "3 | Log in from {{ web }}"
+          ansible.builtin.command: >-
+            mysql -h {{ site.db_ip }} -u {{ app_db_user }} {{ app_db_name }} --batch --skip-column-names
+            -e "SELECT CONCAT(CURRENT_USER(), ' on ', @@hostname, ', ', COUNT(*), ' messages') FROM messages"
+          environment:
+            MYSQL_PWD: "{{ app_db_password }}"
+          delegate_to: "{{ web }}"
+          register: t3
+          changed_when: false
+        - name: "3 | PASS"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 3, 'status': 'PASS', 'evidence': 'login OK as ' ~ t3.stdout}] }}"
+      rescue:
+        - name: "3 | FAIL"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 3, 'status': 'FAIL', 'evidence': ansible_failed_result.stderr | default(ansible_failed_result.msg) | default('error')}] }}"
+
+    # ---------------------------------------------------------------- 4
+    - name: "4 | Database isolation: TCP 3306 from the WAN"
+      block:
+        - name: "4 | Connect to {{ site.wan_ip }}:3306"
+          ansible.builtin.wait_for:
+            host: "{{ site.wan_ip }}"
+            port: 3306
+            timeout: 5
+          register: t4
+          failed_when: t4 is succeeded
+        - name: "4 | PASS"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 4, 'status': 'PASS', 'evidence': site.wan_ip ~ ':3306 does not answer (dropped by the OPNsense WAN default deny)'}] }}"
+      rescue:
+        - name: "4 | FAIL"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 4, 'status': 'FAIL', 'evidence': site.wan_ip ~ ':3306 is OPEN from the WAN'}] }}"
+
+    # ---------------------------------------------------------------- 5
+    - name: "5 | IPsec negotiation: swanctl --list-sas on OPNsense"
+      ansible.builtin.command: >-
+        ssh -i {{ secrets_dir }}/infra_ed25519 -o BatchMode=yes -o ConnectTimeout=5
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+        root@{{ site.lan_gateway }} swanctl --list-sas
+      register: t5
+      changed_when: false
+      failed_when: false
+
+    - name: "5 | Result"
+      vars:
+        up: "{{ t5.stdout is search('ESTABLISHED') and t5.stdout is search('INSTALLED') }}"
+      ansible.builtin.set_fact:
+        results: >-
+          {{ results + [{'n': 5,
+             'status': 'MANUAL' if t5.rc == 255 else ('PASS' if up | bool else 'FAIL'),
+             'evidence': 'no SSH to OPNsense: check VPN -> IPsec -> Status Overview in the GUI' if t5.rc == 255
+                         else (t5.stdout_lines | select('search', 'ESTABLISHED|INSTALLED|===') | map('trim') | join(' / ') or 'no SA') }] }}
+
+    # ---------------------------------------------------------------- 6
+    - name: "6 | Inter-site: ping {{ peer.web_ip }} from {{ site.web_ip }}, no NAT"
+      block:
+        - name: "6 | ping {{ peer.web_ip }}"
+          ansible.builtin.command: ping -c 4 -W 3 {{ peer.web_ip }}
+          delegate_to: "{{ web }}"
+          register: t6
+          changed_when: false
+          retries: 2
+          until: t6.rc == 0
+        - name: "6 | Source address seen by the peer"
+          ansible.builtin.command: curl -s -m 10 http://{{ peer.web_ip }}/whoami
+          delegate_to: "{{ web }}"
+          register: t6who
+          changed_when: false
+          failed_when: t6who.stdout | trim != site.web_ip
+        - name: "6 | PASS"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 6, 'status': 'PASS', 'evidence': t6.stdout_lines[-2] ~ '; peer sees source ' ~ t6who.stdout | trim ~ ' (no NAT)'}] }}"
+      rescue:
+        - name: "6 | FAIL"
+          ansible.builtin.set_fact:
+            results: "{{ results + [{'n': 6, 'status': 'FAIL', 'evidence': (ansible_failed_result.stdout | default(ansible_failed_result.msg) | default('error')) | string | truncate(200)}] }}"
+
+    # ---------------------------------------------------------------- report
+    - name: Report directory
+      ansible.builtin.file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write deliverables/site_{{ site_id }}/acceptance-report.md
+      ansible.builtin.template:
+        src: templates/acceptance-report.md.j2
+        dest: "{{ report_dir }}/acceptance-report.md"
+        mode: "0644"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: "{{ results | map(attribute='n') | map('string') | zip(results | map(attribute='status')) | map('join', ': ') | list }}"
+
+    - name: All six tests pass (MANUAL = check the GUI and take the screenshot)
+      ansible.builtin.assert:
+        that: results | selectattr('status', 'eq', 'FAIL') | list | length == 0
+        fail_msg: "Failed: {{ results | selectattr('status', 'eq', 'FAIL') | map(attribute='n') | list }} — see {{ report_dir }}/acceptance-report.md"
+        success_msg: "Report: {{ report_dir }}/acceptance-report.md"

@@ -1,0 +1,22 @@
+# Waits (up to ~20 s) until `expected_holder` owns the VIP, then checks that
+# no other proxy node has it. Sets `vip_wait_seconds`.
+- name: Wait until the VIP is on {{ expected_holder }}
+  ansible.builtin.command: ip -4 -o addr show dev lan0
+  delegate_to: "{{ expected_holder }}"
+  register: holder_addrs
+  until: (' ' ~ site.vip ~ '/') in holder_addrs.stdout
+  retries: 20
+  delay: 1
+  changed_when: false
+
+- name: The VIP is not on the other node
+  ansible.builtin.command: ip -4 -o addr show dev lan0
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['haproxy'] | difference([expected_holder]) }}"
+  register: other_addrs
+  changed_when: false
+  failed_when: (' ' ~ site.vip ~ '/') in other_addrs.stdout
+
+- name: Remember how long the move took
+  ansible.builtin.set_fact:
+    vip_wait_seconds: "{{ holder_addrs.attempts | default(1) }}"

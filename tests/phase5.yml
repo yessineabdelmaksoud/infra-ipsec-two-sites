@@ -1,0 +1,41 @@
+# Phase 5 validation, run from the hypervisor = an Internet client on the WAN.
+# The page answers on the OPNsense WAN address (acceptance test 1), while
+# MySQL, SSH, the OPNsense GUI and the HAProxy stats stay unreachable from the
+# WAN (acceptance test 4), and a proxy failover does not break the public path.
+# The OPNsense rules themselves are made in the web UI: docs/05-phase5-nat-firewall.md
+
+- name: Phase 5 test | From the WAN side
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    nodes: "{{ groups['haproxy'] | map('extract', hostvars) | list }}"
+    master: "{{ (nodes | selectattr('keepalived_state', 'eq', 'MASTER') | first).inventory_hostname }}"
+    backup: "{{ (nodes | selectattr('keepalived_state', 'eq', 'BACKUP') | first).inventory_hostname }}"
+  tasks:
+    - name: http://{{ site.wan_ip }}/ and https://{{ site.wan_ip }}/ serve the database page (not the OPNsense GUI)
+      ansible.builtin.uri:
+        url: "{{ item }}://{{ site.wan_ip }}/"
+        validate_certs: false
+        return_content: true
+        timeout: 10
+      loop: [http, https]
+      register: wan_page
+      failed_when: >-
+        wan_page.status != 200
+        or 'stored in MySQL on' not in wan_page.content
+        or 'OPNsense' in wan_page.content | regex_search('<title>[^<]*</title>') | default('', true)
+
+    - name: Blocked from the WAN — MySQL 3306, SSH 22, HAProxy stats {{ haproxy_stats_port }}
+      ansible.builtin.wait_for:
+        host: "{{ site.wan_ip }}"
+        port: "{{ item }}"
+        timeout: 5
+      loop: [3306, 22, "{{ haproxy_stats_port }}"]
+      register: wan_ports
+      failed_when: wan_ports is succeeded
+
+    - name: A proxy failover does not break the public path
+      ansible.builtin.include_tasks: tasks/failover.yml
+      vars:
+        stopped_service: keepalived
+        page_url: "http://{{ site.wan_ip }}/"

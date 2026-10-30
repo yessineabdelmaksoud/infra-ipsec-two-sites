@@ -1,0 +1,10 @@
+<?php
+// Managed by Ansible (roles/webapp). Read by /var/www/infra/index.php.
+return [
+    'site_name' => '{{ site.name }}',
+    'color'     => '{{ site.color }}',
+    'db_host'   => '{{ site.db_ip }}',
+    'db_name'   => '{{ app_db_name }}',
+    'db_user'   => '{{ app_db_user }}',
+    'db_pass'   => '{{ app_db_password }}',
+];

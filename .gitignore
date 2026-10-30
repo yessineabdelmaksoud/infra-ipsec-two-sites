@@ -4,3 +4,4 @@
 # Secrets: SSH keys, generated passwords, IPsec PSK (exchange out of band)
 .secrets/
 *.retry
+__pycache__/
