@@ -4,6 +4,10 @@ These pages explain **what we built, why, and how**, in simple words.
 Each page has: the goal, a picture, the commands to run, pieces of the real code
 with explanations, how to check by hand, and the problems we hit.
 
+**New here? Start with the [Learning guide](LEARNING-GUIDE.md)** (big picture, how a
+`make` command becomes machines, why each choice, how problems were debugged,
+exercises). What is still to do: [../NEXT-STEPS.md](../NEXT-STEPS.md).
+
 | Page | What you learn | Who does what |
 |---|---|---|
 | [00 — Setup of the computer](00-setup.md) | Install the tools once (KVM, libvirt, Ansible) | automatic (`sudo` once) |
@@ -14,6 +18,7 @@ with explanations, how to check by hand, and the problems we hit.
 | [05 — Phase 5: NAT + firewall](05-phase5-nat-firewall.md) | Destination NAT, WAN rules, default deny, logging | **you, in the GUI** + automatic test |
 | [06 — Phase 6: IPsec](06-phase6-ipsec.md) | IKEv2, ESP, tunnel mode, PSK, PFS, mirrored settings | **both students, in the GUI** + automatic test |
 | [07 — Acceptance tests and the defense](07-acceptance-and-defense.md) | The six tests, deliverables, 15-minute demo script, likely questions | automatic report + live demo |
+| [Command reference](COMMANDS.md) | Every command: setup, daily use, monitoring per layer, history of what we ran | |
 | [08 — Troubleshooting and daily use](08-troubleshooting.md) | `make up/down`, OPNsense recovery, known pitfalls | |
 | [Report template](report-template.md) | Skeleton of the written report | |
 

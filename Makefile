@@ -15,7 +15,7 @@ RUN       := $(if $(shell id -nG | grep -qw libvirt && echo y),sh -c,sg libvirt 
 PLAY       = $(RUN) "$(ANSIBLE) $(INVENTORY) $(EXTRA) $(ARGS) $(1)"
 
 .PHONY: help setup phase1 test-phase1 phase2 test-phase2 opnsense-rebuild opnsense-backup phase3 test-phase3 \
-        phase4 test-phase4 test-phase5 ipsec-psk test-phase6 acceptance deliverables all up down destroy
+        phase4 test-phase4 test-phase5 ipsec-psk test-phase6 acceptance deliverables all status up down destroy
 
 help:
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -75,6 +75,9 @@ deliverables: ## Collect keepalived.conf, haproxy.cfg and the redacted OPNsense 
 	$(call PLAY,playbooks/deliverables.yml)
 
 all: phase1 phase2 phase3 phase4 ## Build every automated part of SITE (phases 1-4)
+
+status: ## One-screen health view: VMs, VIP holder, web via VIP and WAN, tunnel (read-only)
+	$(call PLAY,playbooks/status.yml)
 
 up: ## Start every VM of SITE (after a reboot of the computer, for example)
 	$(call PLAY,playbooks/power.yml -e power=up)

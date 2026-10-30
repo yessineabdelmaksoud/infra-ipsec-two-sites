@@ -1,0 +1,59 @@
+# One-screen health view of SITE: VMs, VIP holder, web through the VIP and the
+# WAN, inter-site tunnel. Read-only and never fails: it reports, it does not fix.
+#   make status SITE=a
+
+- name: Site status
+  hosts: hypervisor
+  gather_facts: false
+  vars:
+    vms: "{{ groups['opnsense'] + groups['haproxy'] + groups['web'] + groups['db'] }}"
+    web: "{{ groups['web'][0] }}"
+  tasks:
+    - name: VM states
+      ansible.builtin.command: virsh -c {{ libvirt_uri }} domstate {{ item }}
+      loop: "{{ vms }}"
+      register: states
+      changed_when: false
+      failed_when: false
+
+    - name: Who holds the VIP
+      ansible.builtin.command: >-
+        ssh -i {{ secrets_dir }}/infra_ed25519 -o BatchMode=yes -o ConnectTimeout=3
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+        {{ vm_user }}@{{ hostvars[item].ansible_host }} ip -4 -o addr show dev lan0
+      loop: "{{ groups['haproxy'] }}"
+      register: vip_check
+      changed_when: false
+      failed_when: false
+
+    - name: Web page through the VIP and through the OPNsense WAN
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        return_content: true
+        timeout: 5
+      loop: ["http://{{ site.vip }}/", "http://{{ site.wan_ip }}/"]
+      register: pages
+      failed_when: false
+
+    - name: Tunnel to the other site (from the web VM)
+      ansible.builtin.command: >-
+        ssh -i {{ secrets_dir }}/infra_ed25519 -o BatchMode=yes -o ConnectTimeout=3
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+        {{ vm_user }}@{{ site.web_ip }} curl -s -m 4 http://{{ peer.web_ip }}/whoami
+      register: tunnel
+      changed_when: false
+      failed_when: false
+
+    - name: Summary
+      vars:
+        holders: "{{ vip_check.results | selectattr('stdout', 'search', ' ' ~ site.vip ~ '/') | map(attribute='item') | list }}"
+        via_vip: "{{ pages.results[0] }}"
+        via_wan: "{{ pages.results[1] }}"
+      ansible.builtin.debug:
+        msg:
+          - "{{ site.name }} — mode {{ deployment_mode }}"
+          - "VMs:      {{ states.results | map(attribute='item') | zip(states.results | map(attribute='stdout')) | map('join', '=') | join(', ') }}"
+          - "VIP {{ site.vip }}: {{ holders | join(' + ') if holders else 'NOBODY (Keepalived/HAProxy down?)' }}{{ '  <- SPLIT BRAIN' if holders | length > 1 else '' }}"
+          - "Web via VIP:  {{ 'OK, served by ' ~ via_vip.x_proxy_node | default('?') if via_vip.status | default(-1) == 200 else 'DOWN (' ~ via_vip.msg | default('') | truncate(60) ~ ')' }}"
+          - "Web via WAN {{ site.wan_ip }}: {{ 'OK, served by ' ~ via_wan.x_proxy_node | default('?') if via_wan.status | default(-1) == 200 else 'not reachable (Phase 5 NAT not done?)' }}"
+          - "Tunnel to {{ peer.name }} {{ peer.web_ip }}: {{ 'UP, no NAT (peer sees ' ~ tunnel.stdout | trim ~ ')' if tunnel.stdout | trim == site.web_ip else ('reachable but NATed: ' ~ tunnel.stdout | trim if tunnel.rc == 0 and tunnel.stdout | trim else 'DOWN (Phase 6 not done, or peer off)') }}"
